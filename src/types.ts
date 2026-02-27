@@ -1,12 +1,12 @@
 /**
  * Vocal SDK Types
- * 通用的音色和语音合成接口，不与具体 provider 耦合
+ * Generic voice and speech synthesis interfaces, not coupled with any specific provider
  */
 
-// ========== 通用接口定义 ==========
+// ========== Generic Interfaces ==========
 
 /**
- * SDK 配置
+ * SDK Configuration
  */
 export interface VocalConfig {
   apiKey: string;
@@ -14,176 +14,176 @@ export interface VocalConfig {
 }
 
 /**
- * 音色信息
+ * Voice information
  */
 export interface Voice {
   /**
-   * 音色唯一标识
+   * Unique voice identifier
    */
   id: string;
   
   /**
-   * 音色名称
+   * Voice name
    */
   name?: string;
   
   /**
-   * 试听的音频 URL
+   * Preview audio URL
    */
   previewUrl?: string;
   
   /**
-   * 试听音频 (可能是 hex 编码)
+   * Preview audio (hex encoded)
    */
   previewAudio?: string;
 }
 
 /**
- * 音频合成结果
+ * Audio synthesis result
  */
 export interface AudioResult {
   /**
-   * 文件唯一标识
+   * File unique identifier
    */
   fileId: string;
   
   /**
-   * 音频文件 URL
+   * Audio file URL
    */
   url: string;
 }
 
 /**
- * 操作结果
+ * Operation result
  */
 export interface Result<T = void> {
   /**
-   * 是否成功
+   * Whether successful
    */
   success: boolean;
   
   /**
-   * 数据
+   * Result data
    */
   data?: T;
   
   /**
-   * 错误信息
+   * Error message
    */
   error?: string;
 }
 
 /**
- * 音色克隆选项
+ * Voice clone options
  */
 export interface CloneOptions {
   /**
-   * 要克隆的音频文件路径
+   * Audio file path to clone
    */
   audioPath: string;
   
   /**
-   * 自定义的 voice_id
+   * Custom voice_id
    */
   voiceId: string;
   
   /**
-   * 参考音频路径 (增强克隆效果)
+   * Prompt audio path (enhance cloning effect)
    */
   promptAudioPath?: string;
   
   /**
-   * 参考音频对应的文本
+   * Prompt audio text
    */
   promptText?: string;
   
   /**
-   * 测试文本 (生成试听音频)
+   * Test text (generate preview audio)
    */
   testText?: string;
   
   /**
-   * 使用的模型
+   * Model to use
    */
   model?: string;
 }
 
 /**
- * 音色设计选项
+ * Voice design options
  */
 export interface DesignOptions {
   /**
-   * 音色描述
+   * Voice description
    */
   prompt: string;
   
   /**
-   * 试听音频文本
+   * Preview audio text
    */
   previewText: string;
   
   /**
-   * 自定义音色ID
+   * Custom voice_id
    */
   voiceId?: string;
   
   /**
-   * 是否添加水印
+   * Whether to add watermark
    */
   watermark?: boolean;
 }
 
 /**
- * 语音合成选项
+ * Speech synthesis options
  */
 export interface SpeechOptions {
   /**
-   * 要合成的文本
+   * Text to synthesize
    */
   text: string;
   
   /**
-   * 音色ID
+   * Voice ID
    */
   voiceId: string;
   
   /**
-   * 使用的模型
+   * Model to use
    */
   model?: string;
   
   /**
-   * 语速
+   * Speech speed
    */
   speed?: number;
   
   /**
-   * 音量
+   * Volume
    */
   volume?: number;
   
   /**
-   * 音调
+   * Pitch
    */
   pitch?: number;
   
   /**
-   * 输出格式
+   * Output format
    */
   format?: string;
   
   /**
-   * 比特率
+   * Bitrate
    */
   bitrate?: number;
   
   /**
-   * 采样率
+   * Sample rate
    */
   sampleRate?: number;
 }
 
-// ========== MiniMax 特定类型 (内部使用) ==========
+// ========== MiniMax Specific Types (Internal) ==========
 
 /** @internal */
 export interface MiniMaxConfig {

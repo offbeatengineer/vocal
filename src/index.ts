@@ -1,5 +1,5 @@
 /**
- * Vocal SDK - 统一的语音合成和音色克隆 SDK
+ * Vocal SDK - Unified voice synthesis and voice cloning SDK
  */
 
 import axios, { AxiosInstance } from 'axios';
@@ -23,8 +23,8 @@ import {
 const DEFAULT_BASE_URL = 'https://api.minimaxi.com';
 
 /**
- * Vocal SDK 主类
- * 提供音色克隆、音色设计和语音合成功能
+ * Vocal SDK Main Class
+ * Provides voice cloning, voice design and speech synthesis
  */
 export class Vocal {
   private apiKey: string;
@@ -44,7 +44,7 @@ export class Vocal {
   }
 
   /**
-   * 上传音频文件
+   * Upload audio file
    * @internal
    */
   private async uploadAudio(audioPath: string, purpose: string): Promise<string> {
@@ -77,36 +77,36 @@ export class Vocal {
   }
 
   /**
-   * 上传待克隆的音频
+   * Upload audio for cloning
    */
   async uploadCloneAudio(audioPath: string): Promise<string> {
     return this.uploadAudio(audioPath, 'voice_clone');
   }
 
   /**
-   * 上传参考音频
+   * Upload prompt audio
    */
   async uploadPromptAudio(audioPath: string): Promise<string> {
     return this.uploadAudio(audioPath, 'prompt_audio');
   }
 
   /**
-   * 音色克隆
-   * @param options 克隆选项
-   * @returns 克隆结果
+   * Clone voice
+   * @param options Clone options
+   * @returns Clone result
    */
   async cloneVoice(options: CloneOptions): Promise<Result<Voice>> {
     try {
-      // 1. 上传待克隆音频
+      // 1. Upload audio to clone
       const fileId = await this.uploadCloneAudio(options.audioPath);
 
-      // 2. (可选) 上传参考音频
+      // 2. (Optional) Upload prompt audio
       let promptFileId: string | undefined;
       if (options.promptAudioPath) {
         promptFileId = await this.uploadPromptAudio(options.promptAudioPath);
       }
 
-      // 3. 调用克隆接口
+      // 3. Call clone API
       const request: any = {
         file_id: fileId,
         voice_id: options.voiceId,
@@ -136,7 +136,7 @@ export class Vocal {
 
       const data = response.data;
 
-      // 检查错误
+      // Check for errors
       if (data.base_resp && data.base_resp.status_code !== 0) {
         return {
           success: false,
@@ -144,13 +144,12 @@ export class Vocal {
         };
       }
 
-      // 转换为通用格式
+      // Convert to generic format
       return {
         success: true,
         data: {
           id: options.voiceId,
           previewUrl: data.demo_audio || undefined,
-          // 注意: clone 接口返回的是 URL，不是 hex
         },
       };
     } catch (error: any) {
@@ -162,7 +161,7 @@ export class Vocal {
   }
 
   /**
-   * 简化版音色克隆
+   * Simplified voice clone
    */
   async clone(
     audioPath: string,
@@ -179,7 +178,7 @@ export class Vocal {
   }
 
   /**
-   * 音色设计 - 通过文字描述生成音色
+   * Voice design - Generate voice from text description
    */
   async designVoice(options: DesignOptions): Promise<Result<Voice>> {
     try {
@@ -202,7 +201,7 @@ export class Vocal {
 
       const data = response.data;
 
-      // 检查错误
+      // Check for errors
       if (data.base_resp && data.base_resp.status_code !== 0) {
         return {
           success: false,
@@ -226,7 +225,7 @@ export class Vocal {
   }
 
   /**
-   * 简化版音色设计
+   * Simplified voice design
    */
   async design(
     prompt: string,
@@ -241,7 +240,7 @@ export class Vocal {
   }
 
   /**
-   * 语音合成
+   * Speech synthesis
    */
   async speech(options: SpeechOptions): Promise<Result<AudioResult>> {
     try {
@@ -285,7 +284,7 @@ export class Vocal {
   }
 
   /**
-   * 简化版语音合成
+   * Simplified speech synthesis
    */
   async speak(
     text: string,
@@ -301,13 +300,13 @@ export class Vocal {
 }
 
 /**
- * 创建 Vocal 实例
+ * Create Vocal instance
  */
 export function createVocal(apiKey: string, baseUrl?: string): Vocal {
   return new Vocal({ apiKey, baseUrl });
 }
 
-// 兼容旧版导出
+// Legacy exports for compatibility
 export { Vocal as MiniMaxVoiceClone, createVocal as createMiniMaxVoiceClone };
 
 export default Vocal;

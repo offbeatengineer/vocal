@@ -1,21 +1,21 @@
 /**
- * Vocal SDK 使用示例
+ * Vocal SDK Usage Examples
  */
 
 import { createVocal, Vocal } from 'vocal';
 
-// 创建实例
+// Create instance
 const vocal = createVocal(process.env.MINIMAX_API_KEY || 'your-api-key');
 
 /**
- * 示例1: 简化版音色克隆
+ * Example 1: Simplified voice clone
  */
 async function cloneVoice() {
   const result = await vocal.clone(
-    '/path/to/audio.mp3',  // 要克隆的音频
-    'my_voice_id',          // 自定义 voice_id
-    '测试文本',             // 测试文本
-    'speech-2.8-hd'        // 模型
+    '/path/to/audio.mp3',  // Audio to clone
+    'my_voice_id',         // Custom voice_id
+    'Test text',          // Test text
+    'speech-2.8-hd'       // Model
   );
 
   if (result.success) {
@@ -27,15 +27,15 @@ async function cloneVoice() {
 }
 
 /**
- * 示例2: 完整版音色克隆
+ * Example 2: Full voice clone
  */
 async function cloneVoiceFull() {
   const result = await vocal.cloneVoice({
     audioPath: '/path/to/audio.mp3',
     voiceId: 'my_voice_id',
     promptAudioPath: '/path/to/prompt.mp3',
-    promptText: '参考音频文本',
-    testText: '测试文本',
+    promptText: 'Prompt audio text',
+    testText: 'Test text',
     model: 'speech-2.8-hd',
   });
 
@@ -45,12 +45,12 @@ async function cloneVoiceFull() {
 }
 
 /**
- * 示例3: 音色设计
+ * Example 3: Voice design
  */
 async function designVoice() {
   const result = await vocal.design(
-    '讲述悬疑故事的播音员，声音低沉富有磁性',
-    '夜深了，古屋里只有他一人...'
+    'A deep, resonant narrator with a mysterious atmosphere',
+    'Night fell, and the old house stood silent...'
   );
 
   if (result.success) {
@@ -60,11 +60,11 @@ async function designVoice() {
 }
 
 /**
- * 示例4: 语音合成
+ * Example 4: Speech synthesis
  */
 async function speak() {
   const result = await vocal.speak(
-    '你好，这是语音合成',
+    'Hello, this is speech synthesis',
     'my_voice_id'
   );
 
@@ -75,11 +75,11 @@ async function speak() {
 }
 
 /**
- * 示例5: 完整版语音合成
+ * Example 5: Full speech synthesis
  */
 async function speech() {
   const result = await vocal.speech({
-    text: '你好，这是语音合成',
+    text: 'Hello, this is speech synthesis',
     voiceId: 'my_voice_id',
     model: 'speech-2.8-hd',
     speed: 1.0,

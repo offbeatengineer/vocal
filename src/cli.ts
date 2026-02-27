@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Vocal CLI - 音色克隆和语音合成工具
+ * Vocal CLI - Voice cloning and speech synthesis tool
  */
 
 import { Command } from 'commander';
@@ -11,26 +11,26 @@ import * as path from 'path';
 import axios from 'axios';
 
 /**
- * 下载文件
+ * Download file from URL
  */
 async function downloadFile(url: string, outputPath: string): Promise<void> {
   const response = await axios.get(url, { responseType: 'arraybuffer' });
   fs.writeFileSync(outputPath, Buffer.from(response.data));
-  console.log(`   试听音频已保存: ${outputPath}`);
+  console.log(`   Preview audio saved: ${outputPath}`);
 }
 
 /**
- * 解析 hex 音频并保存为文件
+ * Save hex audio to file
  */
 function saveHexAudio(hexAudio: string, outputPath: string): void {
   const hex = hexAudio.replace(/\s/g, '');
   const buffer = Buffer.from(hex, 'hex');
   fs.writeFileSync(outputPath, buffer);
-  console.log(`   试听音频已保存: ${outputPath}`);
+  console.log(`   Preview audio saved: ${outputPath}`);
 }
 
 /**
- * 加载配置
+ * Load config from .env file
  */
 function loadConfig() {
   const envFile = path.join(process.cwd(), '.env');
@@ -60,12 +60,12 @@ function loadConfig() {
   const apiKey = envVars.MINIMAX_API_KEY || process.env.MINIMAX_API_KEY;
   
   if (!apiKey) {
-    console.error('❌ 请设置 API Key');
+    console.error('Please set API Key');
     console.error('');
-    console.error('方式1: 环境变量');
+    console.error('Option 1: Environment variable');
     console.error('   export MINIMAX_API_KEY="your-api-key"');
     console.error('');
-    console.error('方式2: .env 文件 (当前目录)');
+    console.error('Option 2: .env file (current directory)');
     console.error('   echo "MINIMAX_API_KEY=your-api-key" > .env');
     process.exit(1);
   }
@@ -75,24 +75,24 @@ function loadConfig() {
   return { apiKey, baseUrl };
 }
 
-// 主程序
+// Main program
 const program = new Command();
 
 program
   .name('vocal')
-  .description('音色克隆和语音合成工具')
+  .description('Voice cloning and speech synthesis tool')
   .version('1.0.0');
 
-// clone 命令
+// clone command
 program
   .command('clone')
-  .description('克隆音色')
-  .requiredOption('-a, --audio <path>', '待克隆的音频文件路径 (mp3/m4a/wav)')
-  .requiredOption('-v, --voice-id <id>', '自定义的 voice_id')
-  .option('-p, --prompt-audio <path>', '参考音频路径 (增强克隆效果)')
-  .option('-t, --prompt-text <text>', '参考音频对应的文本')
-  .option('--text <text>', '测试文本')
-  .option('-m, --model <model>', '使用的模型 (speech-2.8 或 speech-2.8-hd)', 'speech-2.8-hd')
+  .description('Clone voice')
+  .requiredOption('-a, --audio <path>', 'Audio file path to clone (mp3/m4a/wav)')
+  .requiredOption('-v, --voice-id <id>', 'Custom voice_id')
+  .option('-p, --prompt-audio <path>', 'Prompt audio path (enhance cloning effect)')
+  .option('-t, --prompt-text <text>', 'Prompt audio text')
+  .option('--text <text>', 'Test text')
+  .option('-m, --model <model>', 'Model (speech-2.8 or speech-2.8-hd)', 'speech-2.8-hd')
   .action(async (options) => {
     const { apiKey, baseUrl } = loadConfig();
     const vocal = createVocal(apiKey, baseUrl);
@@ -109,47 +109,47 @@ program
     });
 
     if (!result.success) {
-      console.error('❌ 克隆失败:', result.error);
+      console.error('Clone failed:', result.error);
       process.exit(1);
     }
 
-    console.log('🎉 音色克隆成功!');
+    console.log('Voice cloned successfully!');
     console.log('');
-    console.log('📋 结果:');
+    console.log('Result:');
     console.log(`   voice_id: ${result.data?.id}`);
     
-    // 下载预览音频
+    // Download preview audio
     if (result.data?.previewUrl) {
       const voiceId = result.data.id;
       const outputPath = path.join(process.cwd(), `${voiceId}_clone_preview.mp3`);
       try {
         await downloadFile(result.data.previewUrl, outputPath);
       } catch (error: any) {
-        console.log(`   下载失败: ${error.message}`);
-        console.log(`   试听音频: ${result.data.previewUrl}`);
+        console.log(`   Download failed: ${error.message}`);
+        console.log(`   Preview audio: ${result.data.previewUrl}`);
       }
     } else if (result.data?.previewAudio) {
-      // design 命令返回的是 hex 编码
+      // design command returns hex encoded audio
       const voiceId = result.data.id;
       const outputPath = path.join(process.cwd(), `${voiceId}_preview.mp3`);
       saveHexAudio(result.data.previewAudio, outputPath);
     } else {
-      console.log('   (无试听音频)');
+      console.log('   (No preview audio)');
     }
     
     console.log('');
-    console.log('💡 使用示例:');
-    console.log(`   vocal speak -t "要合成的文本" -v ${result.data?.id}`);
+    console.log('Usage example:');
+    console.log(`   vocal speak -t "Text to speak" -v ${result.data?.id}`);
     console.log('');
   });
 
-// tts 命令 (speak 的别名)
+// tts command (alias for speak)
 program
   .command('tts')
-  .description('语音合成')
-  .requiredOption('-t, --text <text>', '要合成的文本')
+  .description('Speech synthesis')
+  .requiredOption('-t, --text <text>', 'Text to synthesize')
   .requiredOption('-v, --voice-id <id>', 'voice_id')
-  .option('-m, --model <model>', '使用的模型', 'speech-2.8-hd')
+  .option('-m, --model <model>', 'Model', 'speech-2.8-hd')
   .action(async (options) => {
     const { apiKey, baseUrl } = loadConfig();
     const vocal = createVocal(apiKey, baseUrl);
@@ -163,25 +163,25 @@ program
     });
 
     if (!result.success) {
-      console.error('❌ 合成失败:', result.error);
+      console.error('Synthesis failed:', result.error);
       process.exit(1);
     }
 
-    console.log('🎉 语音合成成功!');
+    console.log('Speech synthesized successfully!');
     console.log('');
-    console.log('📋 结果:');
-    console.log(`   文件ID: ${result.data?.fileId}`);
-    console.log(`   音频链接: ${result.data?.url}`);
+    console.log('Result:');
+    console.log(`   file_id: ${result.data?.fileId}`);
+    console.log(`   audio_url: ${result.data?.url}`);
     console.log('');
   });
 
-// speak 命令
+// speak command
 program
   .command('speak')
-  .description('语音合成')
-  .requiredOption('-t, --text <text>', '要合成的文本')
+  .description('Speech synthesis')
+  .requiredOption('-t, --text <text>', 'Text to synthesize')
   .requiredOption('-v, --voice-id <id>', 'voice_id')
-  .option('-m, --model <model>', '使用的模型', 'speech-2.8-hd')
+  .option('-m, --model <model>', 'Model', 'speech-2.8-hd')
   .action(async (options) => {
     const { apiKey, baseUrl } = loadConfig();
     const vocal = createVocal(apiKey, baseUrl);
@@ -195,24 +195,24 @@ program
     });
 
     if (!result.success) {
-      console.error('❌ 合成失败:', result.error);
+      console.error('Synthesis failed:', result.error);
       process.exit(1);
     }
 
-    console.log('🎉 语音合成成功!');
+    console.log('Speech synthesized successfully!');
     console.log('');
-    console.log('📋 结果:');
-    console.log(`   文件ID: ${result.data?.fileId}`);
-    console.log(`   音频链接: ${result.data?.url}`);
+    console.log('Result:');
+    console.log(`   file_id: ${result.data?.fileId}`);
+    console.log(`   audio_url: ${result.data?.url}`);
     console.log('');
   });
 
-// upload 命令
+// upload command
 program
   .command('upload')
-  .description('上传音频文件')
-  .requiredOption('-a, --audio <path>', '音频文件路径')
-  .option('--purpose <purpose>', '用途 (voice_clone/prompt_audio)', 'voice_clone')
+  .description('Upload audio file')
+  .requiredOption('-a, --audio <path>', 'Audio file path')
+  .option('--purpose <purpose>', 'Purpose (voice_clone/prompt_audio)', 'voice_clone')
   .action(async (options) => {
     const { apiKey, baseUrl } = loadConfig();
     const vocal = createVocal(apiKey, baseUrl);
@@ -227,30 +227,30 @@ program
         fileId = await vocal.uploadCloneAudio(options.audio);
       }
 
-      console.log('✅ 上传成功!');
+      console.log('Upload successful!');
       console.log(`   file_id: ${fileId}`);
       console.log('');
     } catch (error: any) {
-      console.error('❌ 上传失败:', error.message);
+      console.error('Upload failed:', error.message);
       process.exit(1);
     }
   });
 
-// design 命令
+// design command
 program
   .command('design')
-  .description('音色设计 (通过文字描述生成音色)')
-  .requiredOption('-p, --prompt <text>', '音色描述，例如：讲述悬疑故事的播音员，声音低沉富有磁性')
-  .requiredOption('-t, --text <text>', '试听音频文本 (最多500字符)')
-  .option('-v, --voice-id <id>', '自定义音色ID (不传则自动生成)')
-  .option('--watermark', '在试听音频末尾添加水印', false)
+  .description('Design voice (generate voice from text description)')
+  .requiredOption('-p, --prompt <text>', 'Voice description, e.g.: A deep, resonant narrator with a mysterious atmosphere')
+  .requiredOption('-t, --text <text>', 'Preview text (max 500 characters)')
+  .option('-v, --voice-id <id>', 'Custom voice_id (auto-generated if not provided)')
+  .option('--watermark', 'Add watermark to preview audio', false)
   .action(async (options) => {
     const { apiKey, baseUrl } = loadConfig();
     const vocal = createVocal(apiKey, baseUrl);
     
     console.log('');
 
-    console.log('🎨 正在设计音色...');
+    console.log('Designing voice...');
     
     const result = await vocal.designVoice({
       prompt: options.prompt,
@@ -260,14 +260,14 @@ program
     });
 
     if (!result.success) {
-      console.error('❌ 音色设计失败:', result.error);
+      console.error('Voice design failed:', result.error);
       process.exit(1);
     }
 
     console.log('');
-    console.log('🎉 音色设计成功!');
+    console.log('Voice designed successfully!');
     console.log('');
-    console.log('📋 结果:');
+    console.log('Result:');
     console.log(`   voice_id: ${result.data?.id}`);
     
     if (result.data?.previewAudio) {
@@ -277,8 +277,8 @@ program
     }
     
     console.log('');
-    console.log('💡 使用示例:');
-    console.log(`   vocal speak -t "要合成的文本" -v ${result.data?.id}`);
+    console.log('Usage example:');
+    console.log(`   vocal speak -t "Text to speak" -v ${result.data?.id}`);
     console.log('');
   });
 
