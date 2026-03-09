@@ -1,6 +1,10 @@
-voices/
-node_modules/
-dist/
-*.log
-.env
+build/
+models/*.gguf
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
 .DS_Store
+*.log
+/vocal
