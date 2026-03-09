@@ -205,8 +205,9 @@ private:
     struct ggml_cgraph * build_graph_internal(int32_t n_tokens, int32_t n_past, int embed_mode);
 
     // Build code predictor graph (standard 1D RoPE, 5 layers)
-    // Takes pre-computed embeddings, outputs hidden states
-    struct ggml_cgraph * build_code_pred_graph(int32_t n_tokens, int32_t n_past);
+    // Takes pre-computed embeddings, outputs hidden states + logits
+    // codebook_idx: which LM head to apply (-1 = no LM head, 0-14 = apply lm_head[idx])
+    struct ggml_cgraph * build_code_pred_graph(int32_t n_tokens, int32_t n_past, int32_t codebook_idx = -1);
 
     // Initialize code predictor KV cache
     bool init_code_pred_cache(int32_t n_ctx);

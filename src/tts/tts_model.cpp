@@ -976,8 +976,8 @@ void Qwen3TalkerLLM::free_code_pred_cache() {
 
 // Build code predictor graph: 5-layer Qwen3 transformer with standard 1D RoPE
 // Input: pre-computed embeddings [hidden_size, n_tokens]
-// Output: hidden states (after RMSNorm, before LM head)
-struct ggml_cgraph * Qwen3TalkerLLM::build_code_pred_graph(int32_t n_tokens, int32_t n_past) {
+// Output: hidden states + optionally logits from lm_head[codebook_idx]
+struct ggml_cgraph * Qwen3TalkerLLM::build_code_pred_graph(int32_t n_tokens, int32_t n_past, int32_t codebook_idx) {
     const auto & cp = code_pred_.config;
     struct ggml_init_params params = {
         /*.mem_size   =*/ state_.compute_meta.size(),
@@ -1104,7 +1104,16 @@ struct ggml_cgraph * Qwen3TalkerLLM::build_code_pred_graph(int32_t n_tokens, int
     ggml_set_name(cur, "cp_hidden");
     ggml_set_output(cur);
 
-    ggml_build_forward_expand(gf, cur);
+    // Apply LM head on GPU if codebook_idx specified
+    if (codebook_idx >= 0 && codebook_idx < (int32_t)code_pred_.lm_head.size()) {
+        struct ggml_tensor * logits = ggml_mul_mat(ctx0, code_pred_.lm_head[codebook_idx], cur);
+        ggml_set_name(logits, "cp_logits");
+        ggml_set_output(logits);
+        ggml_build_forward_expand(gf, logits);
+    } else {
+        ggml_build_forward_expand(gf, cur);
+    }
+
     ggml_free(ctx0);
     return gf;
 }
@@ -1113,6 +1122,7 @@ bool Qwen3TalkerLLM::predict_codes(const float * talker_hidden, int32_t code_0,
                                      std::vector<int32_t> & out_codes) {
     const auto & cp = code_pred_.config;
     const int H = cp.hidden_size;
+    const int V = cp.vocab_size;  // 2048
     const int n_codebooks = cp.num_code_groups - 1;  // 15
 
     out_codes.resize(n_codebooks);
@@ -1124,13 +1134,14 @@ bool Qwen3TalkerLLM::predict_codes(const float * talker_hidden, int32_t code_0,
     clear_code_pred_cache();
 
     // Step 1: Prefill with [talker_hidden_state, talker_codec_embd(code_0)]
+    // Include lm_head[0] in the graph to compute logits on GPU
     std::vector<float> prefill_embeds(2 * H);
     memcpy(prefill_embeds.data(), talker_hidden, H * sizeof(float));
     compute_codec_embedding(code_0, prefill_embeds.data() + H);
 
     int32_t prefill_pos[2] = {0, 1};
 
-    struct ggml_cgraph * gf = build_code_pred_graph(2, 0);
+    struct ggml_cgraph * gf = build_code_pred_graph(2, 0, 0);  // codebook_idx=0
     if (!ggml_backend_sched_alloc_graph(state_.sched, gf)) {
         std::cerr << "Code predictor: failed to allocate prefill graph" << std::endl;
         return false;
@@ -1147,42 +1158,26 @@ bool Qwen3TalkerLLM::predict_codes(const float * talker_hidden, int32_t code_0,
         return false;
     }
 
-    // Extract hidden state of last token
-    struct ggml_tensor * cp_hidden = ggml_graph_get_tensor(gf, "cp_hidden");
-    std::vector<float> hidden(H);
-    ggml_backend_tensor_get(cp_hidden, hidden.data(), H * sizeof(float), H * sizeof(float));
+    // Read logits from GPU (only last token's logits: V floats = 8KB)
+    struct ggml_tensor * cp_logits = ggml_graph_get_tensor(gf, "cp_logits");
+    std::vector<float> logits_buf(V);
+    // Last token's logits at offset V (token 1 of 2)
+    ggml_backend_tensor_get(cp_logits, logits_buf.data(), V * sizeof(float), V * sizeof(float));
+
+    // Greedy argmax for code predictor (no need for fancy sampling here)
+    auto argmax = [](const float * data, int n) -> int32_t {
+        int32_t best = 0;
+        float best_val = data[0];
+        for (int i = 1; i < n; i++) {
+            if (data[i] > best_val) { best_val = data[i]; best = i; }
+        }
+        return best;
+    };
+
+    out_codes[0] = argmax(logits_buf.data(), V);
 
     code_pred_cache_.n_used = 2;
     ggml_backend_sched_reset(state_.sched);
-
-    // Apply lm_head[0] to get logits for codebook 1
-    // lm_head[i].weight: [hidden_size, vocab_size] — ggml_mul_mat computes W^T @ x
-    // We do this on CPU since it's a single vector-matrix multiply
-    auto apply_lm_head = [&](int head_idx, const float * h) -> int32_t {
-        const int vocab = cp.vocab_size;  // 2048
-        std::vector<ggml_fp16_t> w_f16(H * vocab);
-        ggml_backend_tensor_get(code_pred_.lm_head[head_idx], w_f16.data(), 0,
-                                H * vocab * sizeof(ggml_fp16_t));
-
-        // Compute logits = W^T @ h (W is [H, vocab], so W^T is [vocab, H])
-        // W stored row-major in GGML: w[col * H + row] for column col, row row
-        float best_val = -1e30f;
-        int32_t best_id = 0;
-        for (int v = 0; v < vocab; v++) {
-            float sum = 0.0f;
-            for (int d = 0; d < H; d++) {
-                sum += ggml_fp16_to_fp32(w_f16[v * H + d]) * h[d];
-            }
-            if (sum > best_val) {
-                best_val = sum;
-                best_id = v;
-            }
-        }
-        return best_id;
-    };
-
-    // Sample code_1 from prefill output
-    out_codes[0] = apply_lm_head(0, hidden.data());
 
     // Step 2: Autoregressive generation for codebooks 2-15
     int32_t n_past = 2;
@@ -1193,7 +1188,8 @@ bool Qwen3TalkerLLM::predict_codes(const float * talker_hidden, int32_t code_0,
 
         int32_t step_pos = n_past;
 
-        gf = build_code_pred_graph(1, n_past);
+        // Build graph with lm_head[i] included
+        gf = build_code_pred_graph(1, n_past, i);
         if (!ggml_backend_sched_alloc_graph(state_.sched, gf)) {
             std::cerr << "Code predictor: failed to allocate step graph" << std::endl;
             return false;
@@ -1210,14 +1206,14 @@ bool Qwen3TalkerLLM::predict_codes(const float * talker_hidden, int32_t code_0,
             return false;
         }
 
-        cp_hidden = ggml_graph_get_tensor(gf, "cp_hidden");
-        ggml_backend_tensor_get(cp_hidden, hidden.data(), 0, H * sizeof(float));
+        // Read logits from GPU (V floats = 8KB — trivial transfer)
+        cp_logits = ggml_graph_get_tensor(gf, "cp_logits");
+        ggml_backend_tensor_get(cp_logits, logits_buf.data(), 0, V * sizeof(float));
+
+        out_codes[i] = argmax(logits_buf.data(), V);
 
         n_past++;
         ggml_backend_sched_reset(state_.sched);
-
-        // Apply lm_head[i] to get code for codebook i+1
-        out_codes[i] = apply_lm_head(i, hidden.data());
     }
 
     code_pred_cache_.n_used = n_past;
