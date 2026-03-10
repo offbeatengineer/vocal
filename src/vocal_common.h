@@ -16,12 +16,16 @@
 #define VOCAL_TTS_MODEL_NAME "qwen3-tts-0.6b-f16.gguf"
 #define VOCAL_TTS_TOKENIZER_NAME "tokenizer.json"
 #define VOCAL_TTS_DECODER_NAME "qwen3_tts_decoder.onnx"
+#define VOCAL_TTS_ENCODER_NAME "qwen3_tts_codec_encoder.onnx"
+#define VOCAL_TTS_SPK_ENCODER_NAME "qwen3_tts_speaker_encoder.onnx"
 
 // HuggingFace URLs for GGUF models
 #define VOCAL_ASR_MODEL_URL "https://huggingface.co/FlippyDora/qwen3-asr-0.6b-GGUF/resolve/main/qwen3-asr-0.6b-f16.gguf"
 #define VOCAL_TTS_MODEL_URL "https://huggingface.co/Volko76/Qwen3-TTS-12Hz-0.6B-Base-Qwen3tts.cpp_quants-GGUF/resolve/main/qwen3-tts-0.6b-f16.gguf"
 #define VOCAL_TTS_TOKENIZER_URL "https://huggingface.co/cgisky/qwen3-tts-custom-gguf/resolve/main/tokenizer/tokenizer.json"
 #define VOCAL_TTS_DECODER_URL "https://huggingface.co/cgisky/qwen3-tts-custom-gguf/resolve/main/onnx/qwen3_tts_decoder.onnx"
+#define VOCAL_TTS_ENCODER_URL "https://huggingface.co/cgisky/qwen3-tts-custom-gguf/resolve/main/onnx/qwen3_tts_codec_encoder.onnx"
+#define VOCAL_TTS_SPK_ENCODER_URL "https://huggingface.co/cgisky/qwen3-tts-custom-gguf/resolve/main/onnx/qwen3_tts_speaker_encoder.onnx"
 
 // Exit codes
 #define VOCAL_OK          0

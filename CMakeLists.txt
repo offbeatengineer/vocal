@@ -161,6 +161,19 @@ if(ONNXRT_FOUND)
     target_link_libraries(vocal_tts_codec PUBLIC onnxruntime)
 endif()
 
+# --- TTS encoder (codec encoder + speaker encoder via ONNX Runtime) ---
+add_library(vocal_tts_encoder STATIC
+    src/tts/tts_encoder.cpp
+)
+target_include_directories(vocal_tts_encoder PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/tts
+)
+if(ONNXRT_FOUND)
+    target_include_directories(vocal_tts_encoder PUBLIC ${ONNXRT_DIR}/include)
+    target_link_directories(vocal_tts_encoder PUBLIC ${ONNXRT_DIR}/lib)
+    target_link_libraries(vocal_tts_encoder PUBLIC onnxruntime)
+endif()
+
 # --- TTS pipeline ---
 add_library(vocal_tts STATIC
     src/tts/tts.cpp
@@ -168,6 +181,7 @@ add_library(vocal_tts STATIC
 )
 target_include_directories(vocal_tts PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/tts
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
     ${GGML_DIR}/include
 )
@@ -175,7 +189,9 @@ target_link_libraries(vocal_tts PUBLIC
     vocal_tts_tokenizer
     vocal_tts_model
     vocal_tts_codec
+    vocal_tts_encoder
     vocal_tts_common
+    vocal_audio
     Threads::Threads
 )
 

@@ -20,8 +20,8 @@ make
 ## Features
 
 - **ASR**: Transcribe audio to text in 30+ languages (Qwen3-ASR, GPU-accelerated)
-- **TTS**: Text-to-speech synthesis (coming soon)
-- **Voice Cloning**: Clone voices from audio samples (coming soon)
+- **TTS**: Text-to-speech synthesis (Qwen3-TTS, GPU-accelerated)
+- **Voice Cloning**: Clone voices from reference audio samples
 
 ## Requirements
 
@@ -73,11 +73,40 @@ For timing instrumentation: `make timing`
 ./vocal asr -f audio.wav -m /path/to/model.gguf
 ```
 
+### Text-to-Speech (TTS)
+
+```bash
+# Download TTS models (~1 GB)
+./vocal download tts
+
+# Synthesize speech
+./vocal tts -t "Hello world" -o output.wav
+
+# Read from stdin
+echo "Hello world" | ./vocal tts --stdin -o output.wav
+```
+
+### Voice Cloning
+
+```bash
+# Download voice cloning models (~1.3 GB total)
+./vocal download clone
+
+# Clone a voice (with reference transcript for best quality)
+./vocal clone -f reference.wav --ref-text "What the speaker says in the reference" \
+  -t "Text to synthesize in the cloned voice" -o output.wav
+
+# Clone without transcript (lower quality, uses default speaker style)
+./vocal clone -f reference.wav -t "Text to synthesize" -o output.wav
+```
+
 ### Model Management
 
 ```bash
 # Download models
-./vocal download asr
+./vocal download asr      # ASR model (~1.8 GB)
+./vocal download tts      # TTS model + tokenizer + decoder (~1 GB)
+./vocal download clone    # All TTS models + codec encoder + speaker encoder (~1.3 GB)
 
 # List downloaded models
 ./vocal models
@@ -87,8 +116,8 @@ For timing instrumentation: `make timing`
 
 ```
 vocal asr          Transcribe audio to text
-vocal tts          Synthesize speech (coming soon)
-vocal clone        Clone a voice (coming soon)
+vocal tts          Synthesize speech from text
+vocal clone        Clone a voice from reference audio
 vocal download     Download models
 vocal models       List downloaded models
 vocal version      Print version
