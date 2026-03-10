@@ -34,7 +34,19 @@ make
 ```bash
 git clone --recursive https://github.com/user/vocal.git
 cd vocal
+
+# Install ONNX Runtime (macOS arm64)
+mkdir -p third_party/onnxruntime
+curl -L https://github.com/microsoft/onnxruntime/releases/download/v1.24.3/onnxruntime-osx-arm64-1.24.3.tgz | \
+  tar xz --strip-components=1 -C third_party/onnxruntime
+
 make
+```
+
+If you already cloned without `--recursive`, init the submodules first:
+
+```bash
+git submodule update --init --recursive
 ```
 
 For debug builds: `make debug`
