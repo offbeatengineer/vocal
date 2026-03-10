@@ -13,6 +13,69 @@ namespace vocal_tts {
 TTSTokenizer::TTSTokenizer() = default;
 TTSTokenizer::~TTSTokenizer() = default;
 
+// GPT-2 byte-to-unicode mapping (used by HuggingFace ByteLevel pre-tokenizer).
+// Vocab entries in tokenizer.json use Unicode representations of bytes, not raw bytes.
+// We need to reverse this mapping: decode vocab strings back to raw byte sequences.
+//
+// bytes_to_unicode(): printable bytes map to themselves, others map to U+0100..U+0143
+static void build_unicode_to_byte(std::map<uint32_t, uint8_t> & u2b) {
+    // Bytes that map to themselves (printable ranges)
+    // 33..126, 161..172, 174..255
+    std::vector<int> bs;
+    for (int i = 33; i <= 126; i++) bs.push_back(i);   // ! through ~
+    for (int i = 161; i <= 172; i++) bs.push_back(i);   // ¡ through ¬
+    for (int i = 174; i <= 255; i++) bs.push_back(i);   // ® through ÿ
+
+    // These bytes map to themselves
+    for (int b : bs) {
+        u2b[(uint32_t)b] = (uint8_t)b;
+    }
+
+    // Remaining bytes (0..32, 127..160, 173) map to U+0100..U+0143
+    std::vector<bool> in_bs(256, false);
+    for (int b : bs) in_bs[b] = true;
+
+    int n = 0;
+    for (int b = 0; b < 256; b++) {
+        if (!in_bs[b]) {
+            u2b[(uint32_t)(256 + n)] = (uint8_t)b;
+            n++;
+        }
+    }
+}
+
+// Decode a byte-level encoded string (from tokenizer.json) to raw bytes.
+// Each Unicode codepoint in the string maps to one raw byte.
+static std::vector<uint8_t> decode_byte_level(const std::string & s,
+                                               const std::map<uint32_t, uint8_t> & u2b) {
+    std::vector<uint8_t> out;
+    for (size_t i = 0; i < s.size(); ) {
+        uint32_t cp;
+        uint8_t c = (uint8_t)s[i];
+        int len;
+        if (c < 0x80) {
+            cp = c; len = 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            cp = c & 0x1F; len = 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            cp = c & 0x0F; len = 3;
+        } else {
+            cp = c & 0x07; len = 4;
+        }
+        for (int j = 1; j < len && i + j < s.size(); j++) {
+            cp = (cp << 6) | ((uint8_t)s[i + j] & 0x3F);
+        }
+        i += len;
+
+        auto it = u2b.find(cp);
+        if (it != u2b.end()) {
+            out.push_back(it->second);
+        }
+        // If not found in mapping, skip (shouldn't happen with valid tokenizer)
+    }
+    return out;
+}
+
 // --- Simple JSON parsing helpers (just enough for tokenizer.json) ---
 
 static std::string read_file(const std::string & path) {
@@ -89,6 +152,7 @@ static bool parse_json_int(const std::string & s, size_t & pos, int32_t & out) {
 }
 
 // Skip a JSON value (string, number, object, array, bool, null)
+[[maybe_unused]]
 static void skip_json_value(const std::string & s, size_t & pos) {
     pos = skip_ws(s, pos);
     if (pos >= s.size()) return;
@@ -122,6 +186,10 @@ static void skip_json_value(const std::string & s, size_t & pos) {
 }
 
 bool TTSTokenizer::parse_json(const std::string & json) {
+    // Build the unicode-to-byte mapping for decoding byte-level tokenizer entries
+    std::map<uint32_t, uint8_t> u2b;
+    build_unicode_to_byte(u2b);
+
     // Find "model" object
     size_t model_pos = json.find("\"model\"");
     if (model_pos == std::string::npos) {
@@ -163,7 +231,8 @@ bool TTSTokenizer::parse_json(const std::string & json) {
         int32_t token_id;
         if (!parse_json_int(json, pos, token_id)) break;
 
-        std::vector<uint8_t> token_bytes(token_str.begin(), token_str.end());
+        // Decode byte-level representation to raw bytes
+        std::vector<uint8_t> token_bytes = decode_byte_level(token_str, u2b);
         vocab_[token_bytes] = token_id;
         id_to_token_[token_id] = token_bytes;
         vocab_count++;
@@ -220,8 +289,9 @@ bool TTSTokenizer::parse_json(const std::string & json) {
             break;
         }
 
-        std::vector<uint8_t> first_bytes(first.begin(), first.end());
-        std::vector<uint8_t> second_bytes(second.begin(), second.end());
+        // Decode byte-level representations to raw bytes
+        std::vector<uint8_t> first_bytes = decode_byte_level(first, u2b);
+        std::vector<uint8_t> second_bytes = decode_byte_level(second, u2b);
 
         merges_.push_back({first_bytes, second_bytes});
         merge_ranks_[{first_bytes, second_bytes}] = merge_count;
@@ -251,7 +321,63 @@ bool TTSTokenizer::load(const std::string & path) {
     return true;
 }
 
-// GPT-2 style pre-tokenization: split on whitespace boundaries and punctuation
+// Decode one UTF-8 codepoint from string, return codepoint and advance pos
+static uint32_t decode_utf8(const std::string & s, size_t & pos) {
+    uint8_t c = (uint8_t)s[pos];
+    uint32_t cp;
+    int len;
+    if (c < 0x80)       { cp = c;           len = 1; }
+    else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; len = 2; }
+    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
+    else                { cp = c & 0x07; len = 4; }
+    for (int j = 1; j < len && pos + j < s.size(); j++) {
+        cp = (cp << 6) | ((uint8_t)s[pos + j] & 0x3F);
+    }
+    pos += len;
+    return cp;
+}
+
+// Check if a Unicode codepoint is a "letter" (approximation of \p{L})
+static bool is_unicode_letter(uint32_t cp) {
+    if (cp < 0x80) return std::isalpha((int)cp);
+    // Latin Extended
+    if (cp >= 0x00C0 && cp <= 0x024F) return true;
+    // Cyrillic
+    if (cp >= 0x0400 && cp <= 0x04FF) return true;
+    // Arabic
+    if (cp >= 0x0600 && cp <= 0x06FF) return true;
+    // CJK Unified Ideographs
+    if (cp >= 0x4E00 && cp <= 0x9FFF) return true;
+    // CJK Extension A
+    if (cp >= 0x3400 && cp <= 0x4DBF) return true;
+    // CJK Compatibility Ideographs
+    if (cp >= 0xF900 && cp <= 0xFAFF) return true;
+    // Hiragana
+    if (cp >= 0x3040 && cp <= 0x309F) return true;
+    // Katakana
+    if (cp >= 0x30A0 && cp <= 0x30FF) return true;
+    // Hangul
+    if (cp >= 0xAC00 && cp <= 0xD7AF) return true;
+    // CJK Extension B+
+    if (cp >= 0x20000 && cp <= 0x2A6DF) return true;
+    // Thai
+    if (cp >= 0x0E00 && cp <= 0x0E7F) return true;
+    // Devanagari
+    if (cp >= 0x0900 && cp <= 0x097F) return true;
+    return false;
+}
+
+// Check if a Unicode codepoint is a digit (\p{N})
+static bool is_unicode_digit(uint32_t cp) {
+    if (cp >= '0' && cp <= '9') return true;
+    // Fullwidth digits
+    if (cp >= 0xFF10 && cp <= 0xFF19) return true;
+    return false;
+}
+
+
+// GPT-4 style pre-tokenization:
+// Pattern: (?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
 std::vector<std::string> TTSTokenizer::pre_tokenize(const std::string & text) const {
     std::vector<std::string> chunks;
     std::string current;
@@ -292,29 +418,77 @@ std::vector<std::string> TTSTokenizer::pre_tokenize(const std::string & text) co
             }
         }
 
-        if (c == ' ') {
-            // Space starts a new word — include space as prefix (GPT-2 style Ġ)
+        // Decode the current UTF-8 codepoint (peek, don't advance yet)
+        size_t peek = i;
+        uint32_t cp = decode_utf8(text, peek);
+        int clen = (int)(peek - i);
+
+        if (c == ' ' || c == '\t') {
+            // Whitespace: flush current, start new chunk with space prefix
             if (!current.empty()) { chunks.push_back(current); current.clear(); }
-            current += ' ';
+            current += text[i];
             i++;
-            // Collect the word after the space
-            while (i < text.size() && (uint8_t)text[i] > ' ' &&
-                   std::isalnum((uint8_t)text[i])) {
-                current += text[i];
-                i++;
+            // Collect following letters (ASCII or Unicode) as part of this chunk
+            while (i < text.size()) {
+                size_t p2 = i;
+                uint32_t cp2 = decode_utf8(text, p2);
+                if (is_unicode_letter(cp2)) {
+                    current.append(text, i, p2 - i);
+                    i = p2;
+                } else {
+                    break;
+                }
             }
             if (!current.empty()) { chunks.push_back(current); current.clear(); }
-        } else if (std::isalnum(c) || c >= 0x80) {
-            // Alphanumeric or UTF-8 continuation
-            current += text[i];
-            i++;
-        } else {
-            // Punctuation: emit current, then emit punctuation as own chunk
+        } else if (c == '\n' || c == '\r') {
+            // Newline
             if (!current.empty()) { chunks.push_back(current); current.clear(); }
-            current += text[i];
-            chunks.push_back(current);
-            current.clear();
-            i++;
+            current += text[i]; i++;
+            chunks.push_back(current); current.clear();
+        } else if (is_unicode_letter(cp)) {
+            // Letter: accumulate consecutive letters
+            current.append(text, i, clen);
+            i += clen;
+        } else if (is_unicode_digit(cp)) {
+            // Digit: each digit is its own chunk
+            if (!current.empty()) { chunks.push_back(current); current.clear(); }
+            current.append(text, i, clen);
+            chunks.push_back(current); current.clear();
+            i += clen;
+        } else {
+            // Punctuation/symbol: may start a new chunk with following letters
+            // Pattern: [^\r\n\p{L}\p{N}]?\p{L}+
+            if (!current.empty()) { chunks.push_back(current); current.clear(); }
+            current.append(text, i, clen);
+            i += clen;
+            // Check if letters follow — if so, include them in this chunk
+            bool has_letters = false;
+            while (i < text.size()) {
+                size_t p2 = i;
+                uint32_t cp2 = decode_utf8(text, p2);
+                if (is_unicode_letter(cp2)) {
+                    current.append(text, i, p2 - i);
+                    i = p2;
+                    has_letters = true;
+                } else {
+                    break;
+                }
+            }
+            if (!has_letters) {
+                // No letters follow — collect non-letter, non-digit, non-space chars
+                while (i < text.size()) {
+                    size_t p2 = i;
+                    uint32_t cp2 = decode_utf8(text, p2);
+                    if (!is_unicode_letter(cp2) && !is_unicode_digit(cp2) &&
+                        cp2 != ' ' && cp2 != '\n' && cp2 != '\r' && cp2 != '\t') {
+                        current.append(text, i, p2 - i);
+                        i = p2;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            chunks.push_back(current); current.clear();
         }
     }
 
