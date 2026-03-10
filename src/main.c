@@ -28,6 +28,17 @@ int vocal_tts_clone(const char * model_path, const char * tokenizer_path,
                     const char * text, const char * output_path,
                     int n_threads, float speed, bool print_timing);
 
+int vocal_tts_save_voice(const char * model_path, const char * tokenizer_path,
+                          const char * decoder_path, const char * encoder_path,
+                          const char * spk_encoder_path,
+                          const char * ref_audio_path, const char * ref_text,
+                          const char * save_path);
+
+int vocal_tts_with_voice(const char * model_path, const char * tokenizer_path,
+                          const char * decoder_path, const char * voice_path,
+                          const char * text, const char * output_path,
+                          int n_threads, float speed, bool print_timing);
+
 #ifdef __cplusplus
 }
 #endif
@@ -169,6 +180,7 @@ static void print_tts_usage(void) {
         "  -t, --text <text>        Text to synthesize [required]\n"
         "  --stdin                  Read text from stdin\n"
         "  -o, --output <path>      Output WAV file [required]\n"
+        "  --voice <name>           Use a saved voice profile\n"
         "  -m, --model <path>       Model file path\n"
         "  --tokenizer <path>       Tokenizer file path\n"
         "  --speed <float>          Speed factor (default: 1.0)\n"
@@ -184,6 +196,7 @@ static int cmd_tts(int argc, char ** argv) {
     const char * model_override = NULL;
     const char * tokenizer_override = NULL;
     const char * model_dir = NULL;
+    const char * voice_name = NULL;
     int n_threads = 4;
     float speed = 1.0f;
     bool print_timing = true;
@@ -210,6 +223,9 @@ static int cmd_tts(int argc, char ** argv) {
         } else if (strcmp(argv[i], "--threads") == 0) {
             if (++i >= argc) { fprintf(stderr, "error: --threads requires argument\n"); return VOCAL_ERR_ARGS; }
             n_threads = atoi(argv[i]);
+        } else if (strcmp(argv[i], "--voice") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: --voice requires argument\n"); return VOCAL_ERR_ARGS; }
+            voice_name = argv[i];
         } else if (strcmp(argv[i], "--no-timing") == 0) {
             print_timing = false;
         } else if (strcmp(argv[i], "--model-dir") == 0) {
@@ -288,6 +304,27 @@ static int cmd_tts(int argc, char ** argv) {
         return VOCAL_ERR_MODEL;
     }
 
+    // If --voice specified, use voice profile path
+    if (voice_name) {
+        char voice_path[4096];
+        if (!vocal_voice_path(voice_name, voice_path, sizeof(voice_path))) {
+            fprintf(stderr, "error: could not resolve voice path\n");
+            return VOCAL_ERR_IO;
+        }
+        // Check if the voice profile exists
+        FILE * vf = fopen(voice_path, "rb");
+        if (!vf) {
+            fprintf(stderr, "error: voice profile not found: %s\n", voice_path);
+            fprintf(stderr, "Create one with: vocal clone -f ref.wav --ref-text \"...\" --save %s\n", voice_name);
+            return VOCAL_ERR_IO;
+        }
+        fclose(vf);
+
+        return vocal_tts_with_voice(model_path, tokenizer_path, decoder_path,
+                                     voice_path, text, output_path,
+                                     n_threads, speed, print_timing);
+    }
+
     return vocal_tts_run(model_path, tokenizer_path, decoder_path, text, output_path,
                          n_threads, speed, print_timing);
 }
@@ -299,13 +336,15 @@ static void print_clone_usage(void) {
         "Usage: vocal clone [options]\n"
         "\n"
         "Clone a voice from reference audio and synthesize speech.\n"
+        "Use --save to create a reusable voice profile.\n"
         "\n"
         "Options:\n"
         "  -f, --ref <path>         Reference audio file (WAV) [required]\n"
         "  --ref-text <text>        Transcript of reference audio (improves quality)\n"
-        "  -t, --text <text>        Text to synthesize [required]\n"
+        "  -t, --text <text>        Text to synthesize\n"
         "  --stdin                  Read synthesis text from stdin\n"
-        "  -o, --output <path>      Output WAV file [required]\n"
+        "  -o, --output <path>      Output WAV file\n"
+        "  --save <name>            Save voice profile for reuse (use with: vocal tts --voice <name>)\n"
         "  -m, --model <path>       Model file path\n"
         "  --tokenizer <path>       Tokenizer file path\n"
         "  --speed <float>          Speed factor (default: 1.0)\n"
@@ -323,6 +362,7 @@ static int cmd_clone(int argc, char ** argv) {
     const char * model_override = NULL;
     const char * tokenizer_override = NULL;
     const char * model_dir = NULL;
+    const char * save_name = NULL;
     int n_threads = 4;
     float speed = 1.0f;
     bool print_timing = true;
@@ -355,6 +395,9 @@ static int cmd_clone(int argc, char ** argv) {
         } else if (strcmp(argv[i], "--threads") == 0) {
             if (++i >= argc) { fprintf(stderr, "error: --threads requires argument\n"); return VOCAL_ERR_ARGS; }
             n_threads = atoi(argv[i]);
+        } else if (strcmp(argv[i], "--save") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: --save requires argument\n"); return VOCAL_ERR_ARGS; }
+            save_name = argv[i];
         } else if (strcmp(argv[i], "--no-timing") == 0) {
             print_timing = false;
         } else if (strcmp(argv[i], "--model-dir") == 0) {
@@ -388,6 +431,65 @@ static int cmd_clone(int argc, char ** argv) {
         return VOCAL_ERR_ARGS;
     }
 
+    // --save mode: encode and save voice profile, no synthesis needed
+    if (save_name) {
+        if (!ref_text || !ref_text[0]) {
+            fprintf(stderr, "error: --ref-text required when saving voice profile\n\n");
+            print_clone_usage();
+            return VOCAL_ERR_ARGS;
+        }
+
+        char voice_path[4096];
+        if (!vocal_voice_path(save_name, voice_path, sizeof(voice_path))) {
+            fprintf(stderr, "error: could not resolve voice path\n");
+            return VOCAL_ERR_IO;
+        }
+
+        // Ensure voices directory exists
+        const char * vdir = vocal_voices_dir();
+        if (vdir) {
+            char mkdir_cmd[4200];
+            snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p '%s'", vdir);
+            (void)system(mkdir_cmd);
+        }
+
+        // Resolve model paths for encoding
+        char model_path[4096], tokenizer_path[4096], decoder_path[4096];
+        char encoder_path[4096], spk_encoder_path[4096];
+
+        if (model_override) {
+            snprintf(model_path, sizeof(model_path), "%s", model_override);
+        } else {
+            if (!vocal_model_path(VOCAL_TTS_MODEL_NAME, model_dir, model_path, sizeof(model_path)) ||
+                !vocal_model_exists(VOCAL_TTS_MODEL_NAME, model_dir)) {
+                fprintf(stderr, "error: TTS model not found. Run: vocal download tts\n");
+                return VOCAL_ERR_MODEL;
+            }
+        }
+        if (tokenizer_override) {
+            snprintf(tokenizer_path, sizeof(tokenizer_path), "%s", tokenizer_override);
+        } else {
+            vocal_model_path(VOCAL_TTS_TOKENIZER_NAME, model_dir, tokenizer_path, sizeof(tokenizer_path));
+        }
+        vocal_model_path(VOCAL_TTS_DECODER_NAME, model_dir, decoder_path, sizeof(decoder_path));
+        vocal_model_path(VOCAL_TTS_ENCODER_NAME, model_dir, encoder_path, sizeof(encoder_path));
+        vocal_model_path(VOCAL_TTS_SPK_ENCODER_NAME, model_dir, spk_encoder_path, sizeof(spk_encoder_path));
+
+        if (!vocal_model_exists(VOCAL_TTS_ENCODER_NAME, model_dir)) {
+            fprintf(stderr, "error: Codec encoder not found. Run: vocal download clone\n");
+            return VOCAL_ERR_MODEL;
+        }
+        if (!vocal_model_exists(VOCAL_TTS_SPK_ENCODER_NAME, model_dir)) {
+            fprintf(stderr, "error: Speaker encoder not found. Run: vocal download clone\n");
+            return VOCAL_ERR_MODEL;
+        }
+
+        return vocal_tts_save_voice(model_path, tokenizer_path, decoder_path,
+                                     encoder_path, spk_encoder_path,
+                                     ref_audio_path, ref_text, voice_path);
+    }
+
+    // Synthesis mode: require text and output
     if (!text || !text[0]) {
         fprintf(stderr, "error: text required (-t or --stdin)\n\n");
         print_clone_usage();
@@ -565,6 +667,9 @@ int main(int argc, char ** argv) {
         return cmd_tts(argc - 2, argv + 2);
     } else if (strcmp(cmd, "clone") == 0) {
         return cmd_clone(argc - 2, argv + 2);
+    } else if (strcmp(cmd, "voices") == 0) {
+        vocal_voices_list();
+        return VOCAL_OK;
     } else {
         fprintf(stderr, "error: unknown command '%s'\n\n", cmd);
         print_usage();

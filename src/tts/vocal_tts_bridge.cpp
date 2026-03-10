@@ -140,4 +140,96 @@ int vocal_tts_clone(const char * model_path, const char * tokenizer_path,
     return 0;
 }
 
+int vocal_tts_save_voice(const char * model_path, const char * tokenizer_path,
+                          const char * decoder_path, const char * encoder_path,
+                          const char * spk_encoder_path,
+                          const char * ref_audio_path, const char * ref_text,
+                          const char * save_path) {
+    ggml_log_set(ggml_log_quiet_tts, nullptr);
+
+    fprintf(stderr, "vocal clone --save\n");
+    fprintf(stderr, "  Reference: %s\n", ref_audio_path);
+    if (ref_text && ref_text[0]) {
+        fprintf(stderr, "  Ref text: \"%s\"\n", ref_text);
+    }
+    fprintf(stderr, "  Save to: %s\n", save_path);
+    fprintf(stderr, "\n");
+
+    vocal_tts::TTS tts;
+
+    if (!tts.load(model_path, tokenizer_path, decoder_path)) {
+        fprintf(stderr, "error: %s\n", tts.get_error().c_str());
+        return 2;
+    }
+
+    if (!tts.load_encoders(encoder_path, spk_encoder_path)) {
+        fprintf(stderr, "error: %s\n", tts.get_error().c_str());
+        return 2;
+    }
+
+    vocal_tts::VoiceProfile profile;
+    if (!tts.encode_voice_profile(ref_audio_path, ref_text ? ref_text : "", profile)) {
+        fprintf(stderr, "error: %s\n", tts.get_error().c_str());
+        return 5;
+    }
+
+    std::string error;
+    if (!profile.save(save_path, error)) {
+        fprintf(stderr, "error: %s\n", error.c_str());
+        return 4;
+    }
+
+    fprintf(stderr, "Voice profile saved: %s\n", save_path);
+    fprintf(stderr, "  Codec: %d codebooks × %d frames (%.1f sec)\n",
+            profile.n_codebooks(), profile.n_frames(), profile.n_frames() / 12.5f);
+    if (!profile.speaker_embed.empty()) {
+        fprintf(stderr, "  Speaker embedding: %d dims\n", profile.speaker_dim());
+    }
+    return 0;
+}
+
+int vocal_tts_with_voice(const char * model_path, const char * tokenizer_path,
+                          const char * decoder_path, const char * voice_path,
+                          const char * text, const char * output_path,
+                          int n_threads, float speed, bool print_timing) {
+    ggml_log_set(ggml_log_quiet_tts, nullptr);
+
+    fprintf(stderr, "vocal tts --voice\n");
+    fprintf(stderr, "  Model: %s\n", model_path);
+    fprintf(stderr, "  Voice: %s\n", voice_path);
+    fprintf(stderr, "  Text: \"%s\"\n", text);
+    fprintf(stderr, "\n");
+
+    vocal_tts::TTS tts;
+
+    if (!tts.load(model_path, tokenizer_path, decoder_path)) {
+        fprintf(stderr, "error: %s\n", tts.get_error().c_str());
+        return 2;
+    }
+
+    vocal_tts::tts_params params;
+    params.n_threads = n_threads;
+    params.speed = speed;
+    params.print_timing = print_timing;
+    params.voice_profile = voice_path;
+
+    auto result = tts.synthesize(text, params);
+
+    if (!result.success) {
+        fprintf(stderr, "error: %s\n", result.error_msg.c_str());
+        return 5;
+    }
+
+    if (!output_path || !output_path[0]) {
+        fprintf(stderr, "error: output path required (-o)\n");
+        return 4;
+    }
+
+    int ret = write_wav(output_path, result.audio, result.sample_rate);
+    if (ret != 0) return ret;
+
+    fprintf(stderr, "Output written to: %s\n", output_path);
+    return 0;
+}
+
 } // extern "C"

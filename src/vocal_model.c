@@ -125,6 +125,70 @@ int vocal_model_download(const char * url, const char * model_name,
     return 0;
 }
 
+static char g_voices_dir[4096];
+
+const char * vocal_voices_dir(void) {
+    const char * home = getenv("HOME");
+    if (!home) return NULL;
+    snprintf(g_voices_dir, sizeof(g_voices_dir), "%s/%s", home, VOCAL_DEFAULT_VOICES_DIR);
+    return g_voices_dir;
+}
+
+char * vocal_voice_path(const char * name, char * buf, int bufsize) {
+    const char * dir = vocal_voices_dir();
+    if (!dir) return NULL;
+    int n = snprintf(buf, bufsize, "%s/%s.voice", dir, name);
+    if (n < 0 || n >= bufsize) return NULL;
+    return buf;
+}
+
+void vocal_voices_list(void) {
+    const char * dir = vocal_voices_dir();
+    if (!dir) {
+        printf("No voices directory found.\n");
+        return;
+    }
+
+    DIR * d = opendir(dir);
+    if (!d) {
+        printf("No voice profiles saved yet.\n");
+        printf("Create one with: vocal clone -f ref.wav --ref-text \"...\" --save myvoice\n");
+        return;
+    }
+
+    printf("Voice profiles in %s:\n\n", dir);
+
+    struct dirent * entry;
+    int count = 0;
+    while ((entry = readdir(d)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        // Only show .voice files
+        const char * ext = strrchr(entry->d_name, '.');
+        if (!ext || strcmp(ext, ".voice") != 0) continue;
+
+        char path[4096];
+        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+            // Print name without extension
+            char name[256];
+            size_t name_len = (size_t)(ext - entry->d_name);
+            if (name_len >= sizeof(name)) name_len = sizeof(name) - 1;
+            memcpy(name, entry->d_name, name_len);
+            name[name_len] = '\0';
+            printf("  %-30s  %8.1f KB\n", name, st.st_size / 1024.0);
+            count++;
+        }
+    }
+    closedir(d);
+
+    if (count == 0) {
+        printf("  (none)\n");
+    }
+    printf("\n");
+}
+
 void vocal_models_list(const char * override_dir) {
     const char * dir = vocal_models_dir(override_dir);
     if (!dir) {

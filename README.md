@@ -92,12 +92,18 @@ echo "Hello world" | ./vocal tts --stdin -o output.wav
 # Download voice cloning models (~1.3 GB total)
 ./vocal download clone
 
-# Clone a voice (with reference transcript for best quality)
+# One-shot clone (encode + synthesize)
 ./vocal clone -f reference.wav --ref-text "What the speaker says in the reference" \
   -t "Text to synthesize in the cloned voice" -o output.wav
 
-# Clone without transcript (lower quality, uses default speaker style)
-./vocal clone -f reference.wav -t "Text to synthesize" -o output.wav
+# Save a voice profile for reuse (skips re-encoding each time)
+./vocal clone -f reference.wav --ref-text "What the speaker says" --save myvoice
+
+# Use a saved voice profile with TTS
+./vocal tts --voice myvoice -t "Text to synthesize" -o output.wav
+
+# List saved voice profiles
+./vocal voices
 ```
 
 ### Model Management
@@ -118,6 +124,7 @@ echo "Hello world" | ./vocal tts --stdin -o output.wav
 vocal asr          Transcribe audio to text
 vocal tts          Synthesize speech from text
 vocal clone        Clone a voice from reference audio
+vocal voices       List saved voice profiles
 vocal download     Download models
 vocal models       List downloaded models
 vocal version      Print version

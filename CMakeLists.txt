@@ -174,6 +174,14 @@ if(ONNXRT_FOUND)
     target_link_libraries(vocal_tts_encoder PUBLIC onnxruntime)
 endif()
 
+# --- Voice profile I/O ---
+add_library(vocal_voice_profile STATIC
+    src/tts/voice_profile.cpp
+)
+target_include_directories(vocal_voice_profile PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/tts
+)
+
 # --- TTS pipeline ---
 add_library(vocal_tts STATIC
     src/tts/tts.cpp
@@ -191,6 +199,7 @@ target_link_libraries(vocal_tts PUBLIC
     vocal_tts_codec
     vocal_tts_encoder
     vocal_tts_common
+    vocal_voice_profile
     vocal_audio
     Threads::Threads
 )

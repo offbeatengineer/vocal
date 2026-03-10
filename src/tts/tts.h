@@ -5,6 +5,7 @@
 #include "tts_codec.h"
 #include "tts_encoder.h"
 #include "tts_types.h"
+#include "voice_profile.h"
 
 #include <string>
 #include <vector>
@@ -24,6 +25,7 @@ struct tts_params {
     // Voice cloning parameters
     std::string ref_audio_path;   // Reference audio for voice cloning (WAV, 24kHz)
     std::string ref_text;         // Transcript of reference audio (for ICL mode)
+    std::string voice_profile;    // Path to saved voice profile (.voice file)
 };
 
 struct tts_result {
@@ -56,6 +58,11 @@ public:
 
     // Synthesize speech from text
     tts_result synthesize(const std::string & text, const tts_params & params = tts_params());
+
+    // Encode reference audio into a voice profile (without synthesizing)
+    bool encode_voice_profile(const std::string & ref_audio_path,
+                              const std::string & ref_text,
+                              VoiceProfile & out_profile);
 
     const std::string & get_error() const { return error_; }
     bool is_loaded() const { return loaded_; }

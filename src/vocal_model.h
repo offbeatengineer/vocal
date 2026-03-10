@@ -30,6 +30,16 @@ int vocal_model_download(const char * url, const char * model_name,
 // List all downloaded models. Prints to stdout.
 void vocal_models_list(const char * override_dir);
 
+// Get the voices directory path (~/.vocal/voices/ by default).
+const char * vocal_voices_dir(void);
+
+// Get the full path to a voice profile file (~/.vocal/voices/<name>.voice).
+// Writes into buf. Returns buf on success, NULL on failure.
+char * vocal_voice_path(const char * name, char * buf, int bufsize);
+
+// List all saved voice profiles. Prints to stdout.
+void vocal_voices_list(void);
+
 #ifdef __cplusplus
 }
 #endif

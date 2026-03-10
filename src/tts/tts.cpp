@@ -768,6 +768,46 @@ void TTS::generate_codes_v2(const std::vector<float> & prompt_embeds,
     }
 }
 
+bool TTS::encode_voice_profile(const std::string & ref_audio_path,
+                               const std::string & ref_text,
+                               VoiceProfile & out_profile) {
+    if (!loaded_) {
+        error_ = "Model not loaded";
+        return false;
+    }
+    if (!encoders_loaded_) {
+        error_ = "Encoder models not loaded";
+        return false;
+    }
+
+    // Load reference audio
+    std::vector<float> ref_audio;
+    if (!load_reference_audio(ref_audio_path, ref_audio)) {
+        return false;
+    }
+    fprintf(stderr, "Reference audio: %zu samples (%.1f sec at 24kHz)\n",
+            ref_audio.size(), (float)ref_audio.size() / 24000.0f);
+
+    // Encode speaker embedding
+    if (speaker_encoder_) {
+        out_profile.speaker_embed = speaker_encoder_->encode(ref_audio.data(), (int)ref_audio.size());
+        if (out_profile.speaker_embed.empty()) {
+            fprintf(stderr, "Warning: Speaker encoder failed: %s\n",
+                    speaker_encoder_->get_error().c_str());
+        }
+    }
+
+    // Encode codec codes
+    out_profile.codec_codes = codec_encoder_->encode(ref_audio.data(), (int)ref_audio.size());
+    if (out_profile.codec_codes.empty()) {
+        error_ = "Codec encoder failed: " + codec_encoder_->get_error();
+        return false;
+    }
+
+    out_profile.ref_text = ref_text;
+    return true;
+}
+
 tts_result TTS::synthesize(const std::string & text, const tts_params & params) {
     tts_result result;
     int64_t t_total_start = get_time_ms();
@@ -777,10 +817,11 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
         return result;
     }
 
-    bool is_clone = !params.ref_audio_path.empty();
-    bool is_icl = is_clone && !params.ref_text.empty();
+    bool has_voice_profile = !params.voice_profile.empty();
+    bool is_clone = !params.ref_audio_path.empty() || has_voice_profile;
+    bool is_icl = is_clone && (!params.ref_text.empty() || has_voice_profile);
 
-    if (is_clone && !encoders_loaded_) {
+    if (!has_voice_profile && is_clone && !encoders_loaded_) {
         result.error_msg = "Encoder models not loaded. Call load_encoders() first.\n"
                            "Run: vocal download clone";
         return result;
@@ -795,12 +836,39 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
     // 2. Language ID
     int32_t language_id = get_language_id(params.language);
 
-    // 3. Encode reference audio (if voice cloning)
+    // 3. Load reference data (from voice profile or live encoding)
     std::vector<float> speaker_embed;
     std::vector<std::vector<int32_t>> ref_codes;
     std::vector<int32_t> ref_text_tokens;
 
-    if (is_clone) {
+    if (has_voice_profile) {
+        // Load pre-encoded voice profile
+        int64_t t_enc_start = get_time_ms();
+
+        VoiceProfile profile;
+        std::string profile_error;
+        if (!profile.load(params.voice_profile, profile_error)) {
+            result.error_msg = profile_error;
+            return result;
+        }
+
+        ref_codes = std::move(profile.codec_codes);
+        speaker_embed = std::move(profile.speaker_embed);
+        ref_text_tokens = tokenizer_.encode(profile.ref_text);
+
+        // Check speaker embedding dimension
+        const int H_check = talker_.get_config().hidden_size;
+        if (!speaker_embed.empty() && (int)speaker_embed.size() != H_check) {
+            speaker_embed.clear();
+        }
+
+        fprintf(stderr, "Voice profile: %d codebooks × %d frames, ref text tokens: %zu\n",
+                (int)ref_codes.size(),
+                ref_codes.empty() ? 0 : (int)ref_codes[0].size(),
+                ref_text_tokens.size());
+
+        result.t_encode_ms = get_time_ms() - t_enc_start;
+    } else if (is_clone) {
         int64_t t_enc_start = get_time_ms();
 
         // Load reference audio
