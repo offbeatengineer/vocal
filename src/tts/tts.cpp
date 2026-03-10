@@ -439,60 +439,47 @@ void TTS::build_prompt_embeds_icl(const std::vector<int32_t> & text_tokens,
     }
     int n_prefill = (int)codec_prefill.size();
 
-    // ICL structure (from Python generate_icl_prompt):
+    // ICL prompt structure (matches Python generate_icl_prompt, streaming mode):
     //
-    // Header: role(3) + control(prefill + speaker + pad) + tts_bos
-    //   Role: [im_start, assistant, \n] — pure text
-    //   Control: prefill tokens with tts_pad, speaker_embed with tts_pad
-    //   Transition: tts_bos + codec_pad (this marks start of ICL content)
+    // Header: role(3) + control(prefill + speaker) + transition(tts_bos + codec_pad)
     //
-    // ICL content (text + codec dual track):
-    //   Text track: [ref_text_tokens..., target_text_tokens..., tts_eos]
-    //   Codec track: [codec_bos, ref_code_sums..., codec_pad (for target text), ..., codec_pad]
+    // ICL section: two tracks positionally overlaid
+    //   Text track: [ref_text, target_text, tts_eos, tts_pad...] (padded to n_paired)
+    //   Codec track: [codec_bos, ref_code_sum_0, ..., ref_code_sum_{n-1}, codec_pad...] (padded)
     //
-    // If text is longer than codec, excess text goes to trailing_text_hidden
-    // If codec is longer than text, text is padded with tts_pad
+    //   text_lens  = len(ref_text) + len(target_text) + 1 (eos)
+    //   codec_lens = 1 (bos) + n_ref_codes
+    //   n_paired   = max(text_lens, codec_lens)
     //
-    // Final: tts_pad + codec_bos (generation start)
+    //   If text > codec: excess text goes to trailing_text_hidden for generation
+    //   If codec >= text: text padded with tts_pad, trailing = tts_pad (n_trailing=0)
 
     int n_ref_codes = (ref_codes.empty() || ref_codes[0].empty()) ? 0 : (int)ref_codes[0].size();
 
-    // All text tokens for ICL: [ref_text, target_text]
+    // Concatenate all text: [ref_text, target_text]
     std::vector<int32_t> all_text;
     all_text.insert(all_text.end(), ref_text_tokens.begin(), ref_text_tokens.end());
     all_text.insert(all_text.end(), text_tokens.begin(), text_tokens.end());
     int n_all_text = (int)all_text.size();
 
-    // Codec side of ICL: [codec_bos] + [ref_code_sums × n_ref_codes]
-    int n_codec_icl = 1 + n_ref_codes;  // codec_bos + ref code sums
+    int text_lens = n_all_text + 1;           // +1 for tts_eos
+    int codec_lens = 1 + n_ref_codes;         // codec_bos + ref_codes
+    int n_paired = std::max(text_lens, codec_lens);
 
-    // Align text and codec: paired length = max(n_all_text, n_codec_icl)
-    int n_paired_icl = std::max(n_all_text, n_codec_icl);
-
-    // Header: 3 (role) + n_prefill + 1 (speaker) + 1 (tts_bos + codec_pad transition)
+    // Header: 3 (role) + n_prefill + 1 (speaker) + 1 (transition)
     int n_header = 3 + n_prefill + 1 + 1;
 
-    // Total: header + paired_icl + 1 (tts_eos) + 1 (generation bos)
-    int n_prompt = n_header + n_paired_icl + 1 + 1;
-
-    // But some text may be trailing (if text > codec)
-    n_trailing = 0;
-    if (n_all_text > n_codec_icl) {
-        // Text is longer — excess text goes to trailing
-        n_trailing = n_all_text - n_codec_icl;
-        n_prompt = n_header + n_codec_icl + 1 + 1;  // paired = n_codec_icl
+    // Trailing text: excess text beyond codec coverage
+    if (text_lens > codec_lens) {
+        n_trailing = text_lens - codec_lens;
+        n_paired = codec_lens;
+    } else {
+        n_trailing = 0;
     }
 
     trailing_text_hidden.clear();
-    if (n_trailing > 0) {
-        trailing_text_hidden.resize(n_trailing * H);
-        for (int i = 0; i < n_trailing; i++) {
-            int text_idx = n_codec_icl + i;  // text tokens after the codec portion
-            talker_.compute_text_embedding(all_text[text_idx], &trailing_text_hidden[i * H]);
-        }
-    }
 
-    int n_paired_in_prompt = n_trailing > 0 ? n_codec_icl : n_paired_icl;
+    int n_prompt = n_header + n_paired;
 
     out_embeds.resize(n_prompt * H);
     int pos = 0;
@@ -528,36 +515,25 @@ void TTS::build_prompt_embeds_icl(const std::vector<int32_t> & text_tokens,
     pos++;
 
     // === ICL paired section ===
-    // For each position i in [0, n_paired_in_prompt):
-    //   Text: all_text[i] if i < n_all_text, else tts_pad
-    //   Codec: codec_bos if i==0, ref_code_sum[i-1] if 1<=i<=n_ref_codes, else codec_pad
-
-    for (int i = 0; i < n_paired_in_prompt; i++) {
-        // Text side
+    std::vector<float> tmp(H);
+    for (int i = 0; i < n_paired; i++) {
+        // Text side: all_text[i], then tts_eos, then tts_pad
         if (i < n_all_text) {
             talker_.compute_text_embedding(all_text[i], text_emb.data());
+        } else if (i == n_all_text) {
+            memcpy(text_emb.data(), tts_eos_embed.data(), H * sizeof(float));
         } else {
             memcpy(text_emb.data(), tts_pad_embed.data(), H * sizeof(float));
         }
 
-        // Codec side
+        // Codec side: codec_bos at i=0, ref_code_sums at i=1..n_ref_codes, then codec_pad
         if (i == 0) {
-            // codec_bos
             memcpy(codec_emb.data(), codec_bos_emb.data(), H * sizeof(float));
-        } else if (i <= n_ref_codes) {
-            // Sum of all codebook embeddings for this timestep
-            // codebook 0: talker's codec_embd
-            // codebooks 1-15: code_predictor's per-group embeddings
-            int t = i - 1;  // timestep index into ref_codes
+        } else if (i - 1 < n_ref_codes) {
+            int t = i - 1;
             memset(codec_emb.data(), 0, H * sizeof(float));
-
-            std::vector<float> tmp(H);
-            // Codebook 0 → talker's codec_embedding
-            if (t < (int)ref_codes[0].size()) {
-                talker_.compute_codec_embedding(ref_codes[0][t], tmp.data());
-                for (int d = 0; d < H; d++) codec_emb[d] += tmp[d];
-            }
-            // Codebooks 1-15 → code_predictor's per-group embeddings
+            talker_.compute_codec_embedding(ref_codes[0][t], tmp.data());
+            for (int d = 0; d < H; d++) codec_emb[d] += tmp[d];
             for (int cb = 1; cb < n_codebooks && cb < (int)ref_codes.size(); cb++) {
                 if (t < (int)ref_codes[cb].size()) {
                     talker_.compute_code_pred_embedding(cb - 1, ref_codes[cb][t], tmp.data());
@@ -565,7 +541,6 @@ void TTS::build_prompt_embeds_icl(const std::vector<int32_t> & text_tokens,
                 }
             }
         } else {
-            // codec_pad (for target text positions beyond ref codes)
             memcpy(codec_emb.data(), codec_pad_emb.data(), H * sizeof(float));
         }
 
@@ -575,20 +550,24 @@ void TTS::build_prompt_embeds_icl(const std::vector<int32_t> & text_tokens,
         pos++;
     }
 
-    // === tts_eos + codec_pad ===
-    for (int d = 0; d < H; d++) {
-        out_embeds[pos * H + d] = tts_eos_embed[d] + codec_pad_emb[d];
+    // === Build trailing text hidden (text positions beyond the paired section) ===
+    if (n_trailing > 0) {
+        trailing_text_hidden.resize(n_trailing * H);
+        int text_offset = n_paired;
+        for (int i = 0; i < n_trailing; i++) {
+            int text_idx = text_offset + i;
+            if (text_idx < n_all_text) {
+                talker_.compute_text_embedding(all_text[text_idx], &trailing_text_hidden[i * H]);
+            } else if (text_idx == n_all_text) {
+                memcpy(&trailing_text_hidden[i * H], tts_eos_embed.data(), H * sizeof(float));
+            } else {
+                memcpy(&trailing_text_hidden[i * H], tts_pad_embed.data(), H * sizeof(float));
+            }
+        }
     }
-    pos++;
 
-    // === tts_pad + codec_bos (generation start) ===
-    for (int d = 0; d < H; d++) {
-        out_embeds[pos * H + d] = tts_pad_embed[d] + codec_bos_emb[d];
-    }
-    pos++;
-
-    fprintf(stderr, "Prompt (ICL): %d positions (header=%d, ICL paired=%d, trailing=%d, ref_codes=%d)\n",
-            n_prompt, n_header, n_paired_in_prompt, n_trailing, n_ref_codes);
+    fprintf(stderr, "Prompt (ICL): %d positions (header=%d, paired=%d, text=%d, codec=%d, trailing=%d)\n",
+            n_prompt, n_header, n_paired, text_lens, codec_lens, n_trailing);
 }
 
 void TTS::generate_codes_v2(const std::vector<float> & prompt_embeds,
@@ -965,31 +944,7 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
 
     result.n_tokens_generated = (int32_t)multi_codes[0].size();
 
-    // 6. For ICL mode: prepend reference codes to generated codes before decoding
-    int ref_code_len = 0;
-    if (is_icl && !ref_codes.empty() && !ref_codes[0].empty()) {
-        ref_code_len = (int)ref_codes[0].size();
-        int gen_len = (int)multi_codes[0].size();
-        int n_cb = (int)multi_codes.size();
-
-        std::vector<std::vector<int32_t>> combined(n_cb);
-        for (int cb = 0; cb < n_cb; cb++) {
-            combined[cb].reserve(ref_code_len + gen_len);
-            if (cb < (int)ref_codes.size()) {
-                combined[cb].insert(combined[cb].end(),
-                                     ref_codes[cb].begin(), ref_codes[cb].end());
-            } else {
-                combined[cb].resize(ref_code_len, 0);
-            }
-            combined[cb].insert(combined[cb].end(),
-                                 multi_codes[cb].begin(), multi_codes[cb].end());
-        }
-        multi_codes = std::move(combined);
-        fprintf(stderr, "ICL decode: %d ref + %d gen = %d total codes\n",
-                ref_code_len, gen_len, (int)multi_codes[0].size());
-    }
-
-    // 7. Decode to waveform
+    // 6. Decode to waveform
     int64_t t_dec_start = get_time_ms();
     result.audio = decoder_->decode(multi_codes);
     result.t_decode_ms = get_time_ms() - t_dec_start;
@@ -997,19 +952,6 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
     if (result.audio.empty()) {
         result.error_msg = "Decoder failed: " + decoder_->get_error();
         return result;
-    }
-
-    // 8. For ICL mode: trim reference audio portion from output
-    if (is_icl && ref_code_len > 0) {
-        int total_codes = (int)multi_codes[0].size();
-        int total_samples = (int)result.audio.size();
-        // Proportional trim: cut = ref_len / total_len * wav_samples
-        int cut = (int)((float)ref_code_len / total_codes * total_samples);
-        if (cut > 0 && cut < total_samples) {
-            result.audio.erase(result.audio.begin(), result.audio.begin() + cut);
-            fprintf(stderr, "ICL trim: removed %d samples (%.1f sec) of reference audio\n",
-                    cut, (float)cut / 24000.0f);
-        }
     }
 
     result.sample_rate = decoder_->get_config().sample_rate;
