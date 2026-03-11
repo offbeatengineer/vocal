@@ -47,7 +47,7 @@ public:
     TTS();
     ~TTS();
 
-    // Load model from GGUF file + tokenizer from tokenizer.json + decoder ONNX
+    // Load model from GGUF files + tokenizer from tokenizer.json
     bool load(const std::string & model_path,
               const std::string & tokenizer_path,
               const std::string & decoder_path);
@@ -71,7 +71,9 @@ private:
     qwen3::Qwen3TalkerLLM talker_;
     TTSTokenizer tokenizer_;
     std::unique_ptr<AudioDecoder> decoder_;
+#ifdef VOCAL_ONNX_CODEC_ENCODER
     std::unique_ptr<CodecEncoder> codec_encoder_;
+#endif
     std::unique_ptr<SpeakerEncoder> speaker_encoder_;
 
     bool loaded_ = false;

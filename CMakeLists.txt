@@ -20,6 +20,8 @@ endif()
 
 # Options
 option(VOCAL_TIMING "Enable detailed timing instrumentation" OFF)
+option(VOCAL_ONNX_CODEC_ENCODER "Keep ONNX Runtime for codec encoder (voice cloning ICL)" OFF)
+
 if(VOCAL_TIMING)
     add_compile_definitions(QWEN3_ASR_TIMING)
 endif()
@@ -29,6 +31,37 @@ find_package(Threads REQUIRED)
 # --- GGML ---
 set(GGML_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml")
 set(GGML_BUILD_DIR "${GGML_DIR}/build")
+
+# Detect Metal backend
+if(APPLE)
+    if(EXISTS "${GGML_BUILD_DIR}/src/ggml-metal/libggml-metal.dylib" OR
+       EXISTS "${GGML_BUILD_DIR}/src/ggml-metal/libggml-metal.a")
+        set(GGML_HAS_METAL ON)
+        message(STATUS "Found GGML Metal backend")
+    else()
+        set(GGML_HAS_METAL OFF)
+    endif()
+endif()
+
+# GGML link helper
+set(GGML_LIBS ggml ggml-base ggml-cpu)
+set(GGML_LINK_DIRS ${GGML_BUILD_DIR}/src)
+if(GGML_HAS_METAL)
+    list(APPEND GGML_LIBS ggml-metal)
+    list(APPEND GGML_LINK_DIRS ${GGML_BUILD_DIR}/src/ggml-metal)
+endif()
+
+# --- ONNX Runtime (optional, only for codec encoder) ---
+set(ONNXRT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime")
+if(VOCAL_ONNX_CODEC_ENCODER AND EXISTS "${ONNXRT_DIR}/include/onnxruntime_c_api.h")
+    set(ONNXRT_FOUND TRUE)
+    message(STATUS "Found ONNX Runtime at ${ONNXRT_DIR} (for codec encoder)")
+else()
+    set(ONNXRT_FOUND FALSE)
+    if(VOCAL_ONNX_CODEC_ENCODER)
+        message(WARNING "ONNX Runtime not found — codec encoder (ICL voice cloning) disabled")
+    endif()
+endif()
 
 # --- Mel spectrogram library ---
 add_library(vocal_mel STATIC
@@ -108,6 +141,17 @@ target_include_directories(vocal_model PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# --- TTS GGUF loader ---
+add_library(vocal_tts_gguf_loader STATIC
+    src/tts/gguf_loader.cpp
+)
+target_include_directories(vocal_tts_gguf_loader PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/tts
+    ${GGML_DIR}/include
+)
+target_link_directories(vocal_tts_gguf_loader PUBLIC ${GGML_LINK_DIRS})
+target_link_libraries(vocal_tts_gguf_loader PUBLIC ${GGML_LIBS})
+
 # --- TTS common utilities ---
 add_library(vocal_tts_common STATIC
     src/tts/tts_common.cpp
@@ -138,37 +182,29 @@ target_include_directories(vocal_tts_model PUBLIC
 target_link_directories(vocal_tts_model PUBLIC ${GGML_BUILD_DIR}/src)
 target_link_libraries(vocal_tts_model PUBLIC ggml ggml-base ggml-cpu vocal_tts_common)
 
-# --- ONNX Runtime ---
-set(ONNXRT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime")
-if(EXISTS "${ONNXRT_DIR}/include/onnxruntime_c_api.h")
-    set(ONNXRT_FOUND TRUE)
-    message(STATUS "Found ONNX Runtime at ${ONNXRT_DIR}")
-else()
-    set(ONNXRT_FOUND FALSE)
-    message(WARNING "ONNX Runtime not found at ${ONNXRT_DIR} — TTS decoder will be disabled")
-endif()
-
-# --- TTS codec (audio decoder via ONNX Runtime) ---
+# --- TTS codec (audio decoder via GGML) ---
 add_library(vocal_tts_codec STATIC
     src/tts/tts_codec.cpp
 )
 target_include_directories(vocal_tts_codec PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/tts
+    ${GGML_DIR}/include
 )
-if(ONNXRT_FOUND)
-    target_include_directories(vocal_tts_codec PUBLIC ${ONNXRT_DIR}/include)
-    target_link_directories(vocal_tts_codec PUBLIC ${ONNXRT_DIR}/lib)
-    target_link_libraries(vocal_tts_codec PUBLIC onnxruntime)
-endif()
+target_link_directories(vocal_tts_codec PUBLIC ${GGML_LINK_DIRS})
+target_link_libraries(vocal_tts_codec PUBLIC ${GGML_LIBS} vocal_tts_gguf_loader)
 
-# --- TTS encoder (codec encoder + speaker encoder via ONNX Runtime) ---
+# --- TTS encoder (speaker encoder via GGML + optional codec encoder via ONNX) ---
 add_library(vocal_tts_encoder STATIC
     src/tts/tts_encoder.cpp
 )
 target_include_directories(vocal_tts_encoder PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/tts
+    ${GGML_DIR}/include
 )
+target_link_directories(vocal_tts_encoder PUBLIC ${GGML_LINK_DIRS})
+target_link_libraries(vocal_tts_encoder PUBLIC ${GGML_LIBS} vocal_tts_gguf_loader)
 if(ONNXRT_FOUND)
+    target_compile_definitions(vocal_tts_encoder PUBLIC VOCAL_ONNX_CODEC_ENCODER)
     target_include_directories(vocal_tts_encoder PUBLIC ${ONNXRT_DIR}/include)
     target_link_directories(vocal_tts_encoder PUBLIC ${ONNXRT_DIR}/lib)
     target_link_libraries(vocal_tts_encoder PUBLIC onnxruntime)
