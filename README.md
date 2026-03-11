@@ -34,12 +34,6 @@ make
 ```bash
 git clone --recursive https://github.com/user/vocal.git
 cd vocal
-
-# Install ONNX Runtime (macOS arm64)
-mkdir -p third_party/onnxruntime
-curl -L https://github.com/microsoft/onnxruntime/releases/download/v1.24.3/onnxruntime-osx-arm64-1.24.3.tgz | \
-  tar xz --strip-components=1 -C third_party/onnxruntime
-
 make
 ```
 
@@ -89,7 +83,7 @@ echo "Hello world" | ./vocal tts --stdin -o output.wav
 ### Voice Cloning
 
 ```bash
-# Download voice cloning models (~1.3 GB total)
+# Download TTS models (voice cloning uses the same models)
 ./vocal download clone
 
 # One-shot clone (encode + synthesize)
@@ -112,7 +106,7 @@ echo "Hello world" | ./vocal tts --stdin -o output.wav
 # Download models
 ./vocal download asr      # ASR model (~1.8 GB)
 ./vocal download tts      # TTS model + tokenizer + decoder (~1 GB)
-./vocal download clone    # All TTS models + codec encoder + speaker encoder (~1.3 GB)
+./vocal download clone    # TTS models (same as tts; encoders are embedded)
 
 # List downloaded models
 ./vocal models

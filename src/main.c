@@ -574,7 +574,7 @@ static void print_download_usage(void) {
         "Models:\n"
         "  asr          Qwen3-ASR 0.6B\n"
         "  tts          Qwen3-TTS 0.6B + tokenizer + decoder\n"
-        "  clone        TTS models + codec encoder + speaker encoder\n"
+        "  clone        TTS models (same as tts; encoders are embedded)\n"
         "\n"
         "Options:\n"
         "  --model-dir <path>   Override model storage directory\n"
