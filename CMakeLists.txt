@@ -20,8 +20,6 @@ endif()
 
 # Options
 option(VOCAL_TIMING "Enable detailed timing instrumentation" OFF)
-option(VOCAL_ONNX_CODEC_ENCODER "Keep ONNX Runtime for codec encoder (voice cloning ICL)" OFF)
-
 if(VOCAL_TIMING)
     add_compile_definitions(QWEN3_ASR_TIMING)
 endif()
@@ -51,17 +49,6 @@ if(GGML_HAS_METAL)
     list(APPEND GGML_LINK_DIRS ${GGML_BUILD_DIR}/src/ggml-metal)
 endif()
 
-# --- ONNX Runtime (optional, only for codec encoder) ---
-set(ONNXRT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime")
-if(VOCAL_ONNX_CODEC_ENCODER AND EXISTS "${ONNXRT_DIR}/include/onnxruntime_c_api.h")
-    set(ONNXRT_FOUND TRUE)
-    message(STATUS "Found ONNX Runtime at ${ONNXRT_DIR} (for codec encoder)")
-else()
-    set(ONNXRT_FOUND FALSE)
-    if(VOCAL_ONNX_CODEC_ENCODER)
-        message(WARNING "ONNX Runtime not found — codec encoder (ICL voice cloning) disabled")
-    endif()
-endif()
 
 # --- Mel spectrogram library ---
 add_library(vocal_mel STATIC
@@ -203,13 +190,6 @@ target_include_directories(vocal_tts_encoder PUBLIC
 )
 target_link_directories(vocal_tts_encoder PUBLIC ${GGML_LINK_DIRS})
 target_link_libraries(vocal_tts_encoder PUBLIC ${GGML_LIBS} vocal_tts_gguf_loader)
-if(ONNXRT_FOUND)
-    target_compile_definitions(vocal_tts_encoder PUBLIC VOCAL_ONNX_CODEC_ENCODER)
-    target_include_directories(vocal_tts_encoder PUBLIC ${ONNXRT_DIR}/include)
-    target_link_directories(vocal_tts_encoder PUBLIC ${ONNXRT_DIR}/lib)
-    target_link_libraries(vocal_tts_encoder PUBLIC onnxruntime)
-endif()
-
 # --- Voice profile I/O ---
 add_library(vocal_voice_profile STATIC
     src/tts/voice_profile.cpp

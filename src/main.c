@@ -538,18 +538,11 @@ static int cmd_clone(int argc, char ** argv) {
         return VOCAL_ERR_MODEL;
     }
 
-    // Codec encoder is only required for ICL mode (when --ref-text is provided)
+    // Codec encoder loads from the tokenizer GGUF (same file as decoder)
     char encoder_path[4096];
-    encoder_path[0] = '\0';
-    if (ref_text && ref_text[0]) {
-        if (!vocal_model_path(VOCAL_TTS_ENCODER_NAME, model_dir, encoder_path, sizeof(encoder_path))) {
-            fprintf(stderr, "error: could not resolve encoder path\n");
-            return VOCAL_ERR_MODEL;
-        }
-        if (!vocal_model_exists(VOCAL_TTS_ENCODER_NAME, model_dir)) {
-            fprintf(stderr, "error: Codec encoder not found (required for --ref-text). Run: vocal download clone\n");
-            return VOCAL_ERR_MODEL;
-        }
+    if (!vocal_model_path(VOCAL_TTS_ENCODER_NAME, model_dir, encoder_path, sizeof(encoder_path))) {
+        fprintf(stderr, "error: could not resolve encoder path\n");
+        return VOCAL_ERR_MODEL;
     }
 
     // Speaker encoder is in the main model GGUF

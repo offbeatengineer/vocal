@@ -8,10 +8,6 @@
 #include <algorithm>
 #include <vector>
 
-#ifdef VOCAL_ONNX_CODEC_ENCODER
-#include "onnxruntime_c_api.h"
-#endif
-
 #define VOCAL_SPK_MAX_NODES 16384
 
 namespace vocal_tts {
@@ -637,150 +633,671 @@ void free_speaker_encoder_model(speaker_encoder_model & model) {
 }
 
 // ============================================================
-// CodecEncoder (ONNX-based, optional)
+// CodecEncoder (GGML-based SEANet + Transformer + RVQ)
 // ============================================================
 
-#ifdef VOCAL_ONNX_CODEC_ENCODER
+#define VOCAL_CODEC_ENC_MAX_NODES 8192
 
-#define ORT_CHECK_ENC(expr) do { \
-    OrtStatus * _s = (expr); \
-    if (_s) { \
-        const char * msg = ort_api->GetErrorMessage(_s); \
-        error_ = std::string("ORT error: ") + msg; \
-        ort_api->ReleaseStatus(_s); \
-        return false; \
-    } \
-} while(0)
+CodecEncoder::CodecEncoder() = default;
 
-static const OrtApi * ort_api = nullptr;
+CodecEncoder::~CodecEncoder() {
+    free_codec_encoder_model(model_);
 
-static void init_ort_api() {
-    if (!ort_api) {
-        ort_api = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+    if (state_.sched) {
+        ggml_backend_sched_free(state_.sched);
+        state_.sched = nullptr;
+    }
+    if (state_.backend) {
+        release_preferred_backend(state_.backend);
+        state_.backend = nullptr;
+    }
+    if (state_.backend_cpu) {
+        ggml_backend_free(state_.backend_cpu);
+        state_.backend_cpu = nullptr;
     }
 }
-
-struct CodecEncoder::Impl {
-    OrtEnv * env = nullptr;
-    OrtSession * session = nullptr;
-    OrtSessionOptions * session_opts = nullptr;
-    OrtMemoryInfo * mem_info = nullptr;
-
-    ~Impl() {
-        if (session) ort_api->ReleaseSession(session);
-        if (session_opts) ort_api->ReleaseSessionOptions(session_opts);
-        if (mem_info) ort_api->ReleaseMemoryInfo(mem_info);
-        if (env) ort_api->ReleaseEnv(env);
-    }
-};
-
-CodecEncoder::CodecEncoder() : impl_(std::make_unique<Impl>()) {
-    init_ort_api();
-}
-
-CodecEncoder::~CodecEncoder() = default;
 
 bool CodecEncoder::load(const std::string & model_path) {
     fprintf(stderr, "Loading codec encoder from %s...\n", model_path.c_str());
 
-    ORT_CHECK_ENC(ort_api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "vocal_codec_enc", &impl_->env));
-    ORT_CHECK_ENC(ort_api->CreateSessionOptions(&impl_->session_opts));
-    ORT_CHECK_ENC(ort_api->SetIntraOpNumThreads(impl_->session_opts, 4));
-    ORT_CHECK_ENC(ort_api->SetSessionGraphOptimizationLevel(impl_->session_opts, ORT_ENABLE_ALL));
-    ORT_CHECK_ENC(ort_api->CreateSession(impl_->env, model_path.c_str(),
-                                          impl_->session_opts, &impl_->session));
-    ORT_CHECK_ENC(ort_api->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault,
-                                                &impl_->mem_info));
+    GGUFLoader loader;
+    if (!loader.open(model_path)) {
+        error_ = loader.get_error();
+        return false;
+    }
 
-    loaded_ = true;
-    fprintf(stderr, "Codec encoder loaded successfully\n");
+    // Read config from GGUF metadata
+    auto & cfg = model_.config;
+    cfg.hidden_size = loader.get_u32("qwen3-tts-tokenizer.encoder.hidden_size", 512);
+    cfg.num_layers = loader.get_u32("qwen3-tts-tokenizer.encoder.num_layers", 8);
+    cfg.num_heads = loader.get_u32("qwen3-tts-tokenizer.encoder.num_heads", 8);
+    cfg.head_dim = cfg.hidden_size / cfg.num_heads;
+    cfg.codebook_dim = loader.get_u32("qwen3-tts-tokenizer.encoder.codebook_dim", 256);
+    cfg.codebook_size = loader.get_u32("qwen3-tts-tokenizer.codebook_size", 2048);
+    cfg.num_quantizers = loader.get_u32("qwen3-tts-tokenizer.encoder.num_quantizers", 32);
+    cfg.valid_quantizers = loader.get_u32("qwen3-tts-tokenizer.encoder.valid_quantizers", 16);
+
+    // Count tok_enc.* tensors
+    int64_t n_tensors = loader.get_n_tensors();
+    int enc_tensor_count = 0;
+    for (int64_t i = 0; i < n_tensors; ++i) {
+        const char * name = loader.get_tensor_name(i);
+        if (!name) continue;
+        if (strncmp(name, "tok_enc.", 8) == 0) enc_tensor_count++;
+        else if (strncmp(name, "tok_dec.vq_first.", 17) == 0) enc_tensor_count++;
+        else if (strncmp(name, "tok_dec.vq_rest.", 16) == 0) enc_tensor_count++;
+    }
+    if (enc_tensor_count == 0) {
+        error_ = "No codec encoder tensors (tok_enc.*) found";
+        return false;
+    }
+
+    size_t ctx_size = ggml_tensor_overhead() * enc_tensor_count;
+    struct ggml_init_params params = { ctx_size, nullptr, true };
+    model_.ctx = ggml_init(params);
+    if (!model_.ctx) { error_ = "Failed to init GGML context"; return false; }
+
+    struct gguf_context * gguf_ctx = loader.get_ctx();
+    struct ggml_context * meta_ctx = loader.get_meta_ctx();
+
+    // Map tensor names to model struct fields
+    for (int64_t i = 0; i < n_tensors; ++i) {
+        const char * name = loader.get_tensor_name(i);
+        if (!name) continue;
+        bool is_enc = strncmp(name, "tok_enc.", 8) == 0;
+        bool is_dec_cb = strncmp(name, "tok_dec.vq_first.", 17) == 0 ||
+                         strncmp(name, "tok_dec.vq_rest.", 16) == 0;
+        if (!is_enc && !is_dec_cb) continue;
+
+        struct ggml_tensor * meta = ggml_get_tensor(meta_ctx, name);
+        if (!meta) continue;
+        struct ggml_tensor * t = ggml_dup_tensor(model_.ctx, meta);
+        ggml_set_name(t, name);
+        model_.tensors[name] = t;
+
+        std::string sname(name);
+        int idx, sub;
+        char suffix[64];
+
+        // SEANet convolutions
+        if (sscanf(name, "tok_enc.conv.%d.%s", &idx, suffix) == 2) {
+            struct ggml_tensor ** w = nullptr, ** b = nullptr;
+            if (idx == 0)  { w = &model_.conv0_w;  b = &model_.conv0_b; }
+            if (idx == 3)  { w = &model_.conv3_w;  b = &model_.conv3_b; }
+            if (idx == 6)  { w = &model_.conv6_w;  b = &model_.conv6_b; }
+            if (idx == 9)  { w = &model_.conv9_w;  b = &model_.conv9_b; }
+            if (idx == 12) { w = &model_.conv12_w; b = &model_.conv12_b; }
+            if (idx == 14) { w = &model_.conv14_w; b = &model_.conv14_b; }
+            if (w && strcmp(suffix, "weight") == 0) *w = t;
+            if (b && strcmp(suffix, "bias") == 0)   *b = t;
+        }
+        // ResNet blocks
+        else if (sscanf(name, "tok_enc.res.%d.blk.%d.%s", &idx, &sub, suffix) == 3) {
+            int ri = -1;
+            if (idx == 1)  ri = 0;
+            if (idx == 4)  ri = 1;
+            if (idx == 7)  ri = 2;
+            if (idx == 10) ri = 3;
+            if (ri >= 0) {
+                if (sub == 1 && strcmp(suffix, "weight") == 0) model_.res[ri].conv1_w = t;
+                if (sub == 1 && strcmp(suffix, "bias") == 0)   model_.res[ri].conv1_b = t;
+                if (sub == 3 && strcmp(suffix, "weight") == 0) model_.res[ri].conv2_w = t;
+                if (sub == 3 && strcmp(suffix, "bias") == 0)   model_.res[ri].conv2_b = t;
+            }
+        }
+        // Transformer blocks
+        else if (sscanf(name, "tok_enc.blk.%d.%s", &idx, suffix) == 2 && idx < 8) {
+            auto & blk = model_.blk[idx];
+            if (strcmp(suffix, "attn_norm.weight") == 0) blk.attn_norm_w = t;
+            else if (strcmp(suffix, "attn_norm.bias") == 0) blk.attn_norm_b = t;
+            else if (strcmp(suffix, "attn_q.weight") == 0) blk.attn_q_w = t;
+            else if (strcmp(suffix, "attn_k.weight") == 0) blk.attn_k_w = t;
+            else if (strcmp(suffix, "attn_v.weight") == 0) blk.attn_v_w = t;
+            else if (strcmp(suffix, "attn_output.weight") == 0) blk.attn_o_w = t;
+            else if (strcmp(suffix, "attn_scale") == 0) blk.attn_scale = t;
+            else if (strcmp(suffix, "ffn_norm.weight") == 0) blk.ffn_norm_w = t;
+            else if (strcmp(suffix, "ffn_norm.bias") == 0) blk.ffn_norm_b = t;
+            else if (strcmp(suffix, "ffn_up.weight") == 0) blk.ffn_up_w = t;
+            else if (strcmp(suffix, "ffn_down.weight") == 0) blk.ffn_down_w = t;
+            else if (strcmp(suffix, "ffn_scale") == 0) blk.ffn_scale = t;
+        }
+        // Downsample
+        else if (sname == "tok_enc.downsample.weight") model_.downsample_w = t;
+        // VQ (use decoder codebooks for compatibility with decoder reconstruction)
+        else if (sname == "tok_enc.vq_semantic.input_proj.weight") model_.vq_semantic_input_proj = t;
+        else if (sname == "tok_dec.vq_first.0.codebook") model_.vq_semantic_codebook = t;
+        else if (sname == "tok_enc.vq_acoustic.input_proj.weight") model_.vq_acoustic_input_proj = t;
+        else if (sscanf(name, "tok_dec.vq_rest.%d.codebook", &idx) == 1) {
+            if (idx >= 0 && idx < codec_encoder_model::MAX_ACOUSTIC_CODEBOOKS)
+                model_.vq_acoustic_codebooks[idx] = t;
+        }
+    }
+
+    // Verify essential tensors
+    if (!model_.conv0_w || !model_.conv14_w || !model_.downsample_w) {
+        error_ = "Missing essential SEANet encoder tensors";
+        return false;
+    }
+    if (!model_.blk[0].attn_q_w) {
+        error_ = "Missing transformer tensors";
+        return false;
+    }
+    if (!model_.vq_semantic_codebook || !model_.vq_acoustic_codebooks[0]) {
+        error_ = "Missing VQ codebook tensors";
+        return false;
+    }
+
+    if (!load_tensor_data_from_file(model_path, gguf_ctx, model_.ctx,
+                                     model_.tensors, model_.buffer, error_)) {
+        return false;
+    }
+
+    // Extract VQ weights to CPU for RVQ computation
+    auto extract_f16 = [](struct ggml_tensor * t, std::vector<float> & out) {
+        int64_t n = ggml_nelements(t);
+        out.resize(n);
+        if (t->type == GGML_TYPE_F32) {
+            ggml_backend_tensor_get(t, out.data(), 0, n * sizeof(float));
+        } else if (t->type == GGML_TYPE_F16) {
+            std::vector<uint8_t> raw(ggml_nbytes(t));
+            ggml_backend_tensor_get(t, raw.data(), 0, raw.size());
+            const ggml_fp16_t * src = (const ggml_fp16_t *)raw.data();
+            for (int64_t j = 0; j < n; j++) out[j] = ggml_fp16_to_fp32(src[j]);
+        } else {
+            // For other types, read raw and hope for the best
+            ggml_backend_tensor_get(t, out.data(), 0, std::min(ggml_nbytes(t), (size_t)(n * sizeof(float))));
+        }
+    };
+
+    if (model_.vq_semantic_input_proj)
+        extract_f16(model_.vq_semantic_input_proj, model_.sem_input_proj_data);
+    extract_f16(model_.vq_semantic_codebook, model_.sem_codebook_data);
+
+    if (model_.vq_acoustic_input_proj)
+        extract_f16(model_.vq_acoustic_input_proj, model_.acou_input_proj_data);
+
+    int n_acoustic = cfg.valid_quantizers - 1;  // 15
+    model_.acou_codebook_data.resize(n_acoustic);
+    for (int i = 0; i < n_acoustic; i++) {
+        if (model_.vq_acoustic_codebooks[i])
+            extract_f16(model_.vq_acoustic_codebooks[i], model_.acou_codebook_data[i]);
+    }
+
+    // Init backend
+    state_.backend = init_preferred_backend("CodecEncoder", &error_);
+    if (!state_.backend) return false;
+
+    ggml_backend_dev_t device = ggml_backend_get_device(state_.backend);
+    const char * device_name = device ? ggml_backend_dev_name(device) : "Unknown";
+    fprintf(stderr, "  CodecEncoder backend: %s\n", device_name);
+
+    if (device && ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+        state_.backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+        if (!state_.backend_cpu) { error_ = "Failed to init CPU backend"; return false; }
+    }
+
+    std::vector<ggml_backend_t> backends;
+    backends.push_back(state_.backend);
+    if (state_.backend_cpu) backends.push_back(state_.backend_cpu);
+    state_.sched = ggml_backend_sched_new(backends.data(), nullptr, (int)backends.size(),
+                                           VOCAL_CODEC_ENC_MAX_NODES, false, true);
+    if (!state_.sched) { error_ = "Failed to create backend scheduler"; return false; }
+
+    state_.compute_meta.resize(ggml_tensor_overhead() * VOCAL_CODEC_ENC_MAX_NODES + ggml_graph_overhead());
+
+    fprintf(stderr, "Codec encoder loaded successfully (%d tensors)\n", enc_tensor_count);
     return true;
 }
 
+// Helper: causal conv1d (left zero padding, no right padding)
+static struct ggml_tensor * causal_conv1d(struct ggml_context * ctx,
+                                           struct ggml_tensor * w,
+                                           struct ggml_tensor * b,
+                                           struct ggml_tensor * x,
+                                           int stride, int dilation) {
+    int kernel_size = (int)w->ne[0];
+    int padding_total = (kernel_size - 1) * dilation;
+
+    if (padding_total > 0) {
+        // Left zero-pad using ggml_pad_ext(lp0, rp0, lp1, rp1, ...)
+        x = ggml_pad_ext(ctx, x, padding_total, 0, 0, 0, 0, 0, 0, 0);
+    }
+
+    struct ggml_tensor * y = ggml_conv_1d(ctx, w, x, stride, 0, dilation);
+
+    if (b) {
+        int64_t oc = y->ne[1];
+        y = ggml_add(ctx, y, ggml_reshape_3d(ctx, b, 1, oc, 1));
+    }
+    return y;
+}
+
+// Helper: replicate padding (for downsample conv)
+static struct ggml_tensor * replicate_pad_conv1d(struct ggml_context * ctx,
+                                                   struct ggml_tensor * w,
+                                                   struct ggml_tensor * x,
+                                                   int stride) {
+    int kernel_size = (int)w->ne[0];
+    int padding_total = (kernel_size - 1);  // dilation=1
+
+    if (padding_total > 0) {
+        int64_t C = x->ne[1];
+        int64_t B = x->ne[2];
+
+        // Replicate first element for left padding
+        struct ggml_tensor * first = ggml_view_3d(ctx, x, 1, C, B,
+                                                    x->nb[1], x->nb[2], 0);
+        first = ggml_cont(ctx, first);
+        struct ggml_tensor * left = ggml_repeat(ctx, first,
+                                                  ggml_new_tensor_3d(ctx, x->type, padding_total, C, B));
+        x = ggml_concat(ctx, left, x, 0);
+    }
+
+    return ggml_conv_1d(ctx, w, x, stride, 0, 1);
+}
+
+struct ggml_cgraph * CodecEncoder::build_graph(int n_samples) {
+    const auto & cfg = model_.config;
+    const int H = cfg.hidden_size;  // 512
+
+    struct ggml_init_params params = {
+        state_.compute_meta.size(), state_.compute_meta.data(), true
+    };
+    struct ggml_context * ctx0 = ggml_init(params);
+    struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, VOCAL_CODEC_ENC_MAX_NODES, false);
+
+    // Input: raw audio [n_samples, 1, 1]
+    struct ggml_tensor * audio = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_samples, 1, 1);
+    ggml_set_name(audio, "audio");
+    ggml_set_input(audio);
+
+    struct ggml_tensor * cur = audio;
+
+    // ===== SEANet Encoder (layers 0-14) =====
+
+    // Layer 0: Conv1d(1, 64, k=7, s=1)
+    cur = causal_conv1d(ctx0, model_.conv0_w, model_.conv0_b, cur, 1, 1);
+
+    // Layer 1: ResBlock(64) - ELU, Conv(64,32,k=3), ELU, Conv(32,64,k=1) + skip
+    {
+        struct ggml_tensor * residual = cur;
+        cur = ggml_elu(ctx0, cur);
+        cur = causal_conv1d(ctx0, model_.res[0].conv1_w, model_.res[0].conv1_b, cur, 1, 1);
+        cur = ggml_elu(ctx0, cur);
+        cur = causal_conv1d(ctx0, model_.res[0].conv2_w, model_.res[0].conv2_b, cur, 1, 1);
+        cur = ggml_add(ctx0, cur, residual);
+    }
+
+    // Layer 2: ELU
+    cur = ggml_elu(ctx0, cur);
+
+    // Layer 3: Conv1d(64, 128, k=8, s=4) - downsample
+    cur = causal_conv1d(ctx0, model_.conv3_w, model_.conv3_b, cur, 4, 1);
+
+    // Layer 4: ResBlock(128)
+    {
+        struct ggml_tensor * residual = cur;
+        cur = ggml_elu(ctx0, cur);
+        cur = causal_conv1d(ctx0, model_.res[1].conv1_w, model_.res[1].conv1_b, cur, 1, 1);
+        cur = ggml_elu(ctx0, cur);
+        cur = causal_conv1d(ctx0, model_.res[1].conv2_w, model_.res[1].conv2_b, cur, 1, 1);
+        cur = ggml_add(ctx0, cur, residual);
+    }
+
+    // Layer 5: ELU
+    cur = ggml_elu(ctx0, cur);
+
+    // Layer 6: Conv1d(128, 256, k=10, s=5) - downsample
+    cur = causal_conv1d(ctx0, model_.conv6_w, model_.conv6_b, cur, 5, 1);
+
+    // Layer 7: ResBlock(256)
+    {
+        struct ggml_tensor * residual = cur;
+        cur = ggml_elu(ctx0, cur);
+        cur = causal_conv1d(ctx0, model_.res[2].conv1_w, model_.res[2].conv1_b, cur, 1, 1);
+        cur = ggml_elu(ctx0, cur);
+        cur = causal_conv1d(ctx0, model_.res[2].conv2_w, model_.res[2].conv2_b, cur, 1, 1);
+        cur = ggml_add(ctx0, cur, residual);
+    }
+
+    // Layer 8: ELU
+    cur = ggml_elu(ctx0, cur);
+
+    // Layer 9: Conv1d(256, 512, k=12, s=6) - downsample
+    cur = causal_conv1d(ctx0, model_.conv9_w, model_.conv9_b, cur, 6, 1);
+
+    // Layer 10: ResBlock(512)
+    {
+        struct ggml_tensor * residual = cur;
+        cur = ggml_elu(ctx0, cur);
+        cur = causal_conv1d(ctx0, model_.res[3].conv1_w, model_.res[3].conv1_b, cur, 1, 1);
+        cur = ggml_elu(ctx0, cur);
+        cur = causal_conv1d(ctx0, model_.res[3].conv2_w, model_.res[3].conv2_b, cur, 1, 1);
+        cur = ggml_add(ctx0, cur, residual);
+    }
+
+    // Layer 11: ELU
+    cur = ggml_elu(ctx0, cur);
+
+    // Layer 12: Conv1d(512, 1024, k=16, s=8) - downsample
+    cur = causal_conv1d(ctx0, model_.conv12_w, model_.conv12_b, cur, 8, 1);
+
+    // Layer 13: ELU
+    cur = ggml_elu(ctx0, cur);
+
+    // Layer 14: Conv1d(1024, 512, k=3, s=1) - project to hidden_size
+    cur = causal_conv1d(ctx0, model_.conv14_w, model_.conv14_b, cur, 1, 1);
+
+    // cur shape: [T_enc, 512, 1] where T_enc ≈ n_samples / 960
+
+    // ===== Encoder Transformer (8 layers) =====
+    // Transpose: [T_enc, 512, 1] → [512, T_enc, 1] for transformer
+    cur = ggml_cont(ctx0, ggml_transpose(ctx0, cur));
+    // Now cur: [512, T_enc, 1]
+
+    int T_enc = -1;  // Will be determined at runtime, but needed for RoPE/mask
+    // We can't know T_enc at graph-build time without computing... but we can derive it.
+    // T_enc ≈ n_samples / 960. Let's compute exactly.
+    {
+        // After layer 0 (k=7, s=1, pad=6): T0 = n_samples
+        // After layer 3 (k=8, s=4, pad=7): T1 = floor((T0 + 7 - 8) / 4 + 1) = floor((T0-1)/4 + 1)
+        // After layer 6 (k=10, s=5, pad=9): T2 = floor((T1 + 9 - 10) / 5 + 1) = floor((T1-1)/5 + 1)
+        // After layer 9 (k=12, s=6, pad=11): T3 = floor((T2 + 11 - 12) / 6 + 1) = floor((T2-1)/6 + 1)
+        // After layer 12 (k=16, s=8, pad=15): T4 = floor((T3 + 15 - 16) / 8 + 1) = floor((T3-1)/8 + 1)
+        // After layer 14 (k=3, s=1, pad=2): T_enc = T4
+        int T0 = n_samples;
+        int T1 = (T0 - 1) / 4 + 1;
+        int T2 = (T1 - 1) / 5 + 1;
+        int T3 = (T2 - 1) / 6 + 1;
+        int T4 = (T3 - 1) / 8 + 1;
+        T_enc = T4;
+    }
+
+    // Position IDs for RoPE
+    struct ggml_tensor * pos_ids = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, T_enc);
+    ggml_set_name(pos_ids, "pos_ids");
+    ggml_set_input(pos_ids);
+
+    // Causal + sliding window attention mask
+    struct ggml_tensor * attn_mask = ggml_new_tensor_2d(ctx0, GGML_TYPE_F16, T_enc, T_enc);
+    ggml_set_name(attn_mask, "attn_mask");
+    ggml_set_input(attn_mask);
+
+    for (int layer = 0; layer < cfg.num_layers; layer++) {
+        auto & blk = model_.blk[layer];
+
+        struct ggml_tensor * residual = cur;
+
+        // LayerNorm (pre-attention)
+        cur = ggml_norm(ctx0, cur, 1e-5f);
+        cur = ggml_mul(ctx0, cur, ggml_reshape_2d(ctx0, blk.attn_norm_w, H, 1));
+        if (blk.attn_norm_b)
+            cur = ggml_add(ctx0, cur, ggml_reshape_2d(ctx0, blk.attn_norm_b, H, 1));
+
+        // Q, K, V projections: [H, T] = W[H, H] @ cur[H, T]
+        struct ggml_tensor * q = ggml_mul_mat(ctx0, blk.attn_q_w, cur);
+        struct ggml_tensor * k = ggml_mul_mat(ctx0, blk.attn_k_w, cur);
+        struct ggml_tensor * v = ggml_mul_mat(ctx0, blk.attn_v_w, cur);
+
+        // Reshape for multi-head: [head_dim, n_heads, T]
+        q = ggml_reshape_3d(ctx0, q, cfg.head_dim, cfg.num_heads, T_enc);
+        k = ggml_reshape_3d(ctx0, k, cfg.head_dim, cfg.num_heads, T_enc);
+        v = ggml_reshape_3d(ctx0, v, cfg.head_dim, cfg.num_heads, T_enc);
+
+        // RoPE (NeoX-style, matching the codec decoder)
+        q = ggml_rope_ext(ctx0, q, pos_ids, nullptr,
+                          cfg.head_dim, GGML_ROPE_TYPE_NEOX, 0,
+                          cfg.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+        k = ggml_rope_ext(ctx0, k, pos_ids, nullptr,
+                          cfg.head_dim, GGML_ROPE_TYPE_NEOX, 0,
+                          cfg.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+
+        // Flash attention with mask
+        // ggml_flash_attn_ext expects: q[head_dim, T, n_heads], k[head_dim, T, n_heads], v[head_dim, T, n_heads]
+        // Our shapes: [head_dim, n_heads, T] — need to permute to [head_dim, T, n_heads]
+        q = ggml_cont(ctx0, ggml_permute(ctx0, q, 0, 2, 1, 3));  // [head_dim, T, n_heads]
+        k = ggml_cont(ctx0, ggml_permute(ctx0, k, 0, 2, 1, 3));
+        v = ggml_cont(ctx0, ggml_permute(ctx0, v, 0, 2, 1, 3));
+
+        float scale = 1.0f / sqrtf((float)cfg.head_dim);
+        struct ggml_tensor * attn_out = ggml_flash_attn_ext(ctx0, q, k, v, attn_mask, scale, 0.0f, 0.0f);
+        // Output: [head_dim, T, n_heads]
+
+        // Reshape back: [H, T]
+        attn_out = ggml_reshape_2d(ctx0, attn_out, H, T_enc);
+
+        // Output projection
+        attn_out = ggml_mul_mat(ctx0, blk.attn_o_w, attn_out);
+
+        // LayerScale + residual
+        if (blk.attn_scale) {
+            attn_out = ggml_mul(ctx0, attn_out, ggml_reshape_2d(ctx0, blk.attn_scale, H, 1));
+        }
+        cur = ggml_add(ctx0, residual, attn_out);
+
+        // FFN
+        residual = cur;
+        cur = ggml_norm(ctx0, cur, 1e-5f);
+        cur = ggml_mul(ctx0, cur, ggml_reshape_2d(ctx0, blk.ffn_norm_w, H, 1));
+        if (blk.ffn_norm_b)
+            cur = ggml_add(ctx0, cur, ggml_reshape_2d(ctx0, blk.ffn_norm_b, H, 1));
+
+        cur = ggml_mul_mat(ctx0, blk.ffn_up_w, cur);    // [2048, T]
+        cur = ggml_gelu(ctx0, cur);
+        cur = ggml_mul_mat(ctx0, blk.ffn_down_w, cur);  // [512, T]
+
+        if (blk.ffn_scale) {
+            cur = ggml_mul(ctx0, cur, ggml_reshape_2d(ctx0, blk.ffn_scale, H, 1));
+        }
+        cur = ggml_add(ctx0, residual, cur);
+    }
+
+    // cur: [512, T_enc, 1]
+
+    // ===== Transpose back for downsample conv =====
+    // After transformer, cur is [512, T_enc, 1] — transpose back to [T_enc, 512, 1]
+    cur = ggml_cont(ctx0, ggml_transpose(ctx0, cur));
+    // cur: [T_enc, 512, 1]
+
+    // ===== Downsample: Conv1d(512, 512, k=4, s=2, no bias, replicate pad) =====
+    cur = replicate_pad_conv1d(ctx0, model_.downsample_w, cur, 2);
+    // cur: [T_out, 512, 1] where T_out ≈ T_enc / 2
+
+    // Transpose so features for each time step are contiguous: [512, T_out]
+    // This matches rvq_encode's access pattern: features[t * H + h]
+    cur = ggml_cont(ctx0, ggml_transpose(ctx0, cur));
+    // cur: [512, T_out, 1] — ne[0]=512, ne[1]=T_out
+    cur = ggml_reshape_2d(ctx0, cur, H, cur->ne[1]);
+    ggml_set_name(cur, "encoder_out");
+    ggml_set_output(cur);
+
+    ggml_build_forward_expand(gf, cur);
+    ggml_free(ctx0);
+    return gf;
+}
+
+void CodecEncoder::rvq_encode(const float * features, int n_frames,
+                               std::vector<std::vector<int32_t>> & out_codes) {
+    const auto & cfg = model_.config;
+    const int cb_dim = cfg.codebook_dim;    // 256
+    const int cb_size = cfg.codebook_size;  // 2048
+    const int H = cfg.hidden_size;          // 512
+    int n_acoustic = cfg.valid_quantizers - 1;  // 15
+
+    out_codes.resize(cfg.valid_quantizers);
+    for (auto & v : out_codes) v.resize(n_frames);
+
+    // Project features and find nearest neighbors
+    auto project_and_quantize = [&](const std::vector<float> & proj_w,
+                                     const std::vector<std::vector<float>> & codebooks,
+                                     int n_cb, bool residual,
+                                     int code_offset) {
+        // Input projection: proj_w is [cb_dim, H] stored as Conv1d(H, cb_dim, k=1)
+        // proj_w shape in GGUF: [1, 512, 256] → treated as [cb_dim, H] matrix
+        std::vector<float> projected(n_frames * cb_dim);
+
+        for (int t = 0; t < n_frames; t++) {
+            for (int d = 0; d < cb_dim; d++) {
+                float sum = 0.0f;
+                for (int h = 0; h < H; h++) {
+                    sum += proj_w[d * H + h] * features[t * H + h];
+                }
+                projected[t * cb_dim + d] = sum;
+            }
+        }
+
+        std::vector<float> residual_buf;
+        if (residual && n_cb > 1) {
+            residual_buf = projected;
+        }
+
+        // Pre-compute codebook norms
+        for (int cb = 0; cb < n_cb; cb++) {
+            const float * codebook = codebooks[cb].data();
+
+            // Precompute ||c_j||^2
+            std::vector<float> cb_norms(cb_size);
+            for (int j = 0; j < cb_size; j++) {
+                float norm = 0.0f;
+                for (int d = 0; d < cb_dim; d++) {
+                    float val = codebook[j * cb_dim + d];
+                    norm += val * val;
+                }
+                cb_norms[j] = norm;
+            }
+
+            const float * query = (cb == 0 || !residual) ? projected.data() :
+                                   residual_buf.data();
+
+            for (int t = 0; t < n_frames; t++) {
+                const float * q = &query[t * cb_dim];
+
+                // Find nearest: ||q - c||^2 = ||q||^2 + ||c||^2 - 2*q·c
+                float best_dist = 1e30f;
+                int32_t best_idx = 0;
+                for (int j = 0; j < cb_size; j++) {
+                    const float * c = &codebook[j * cb_dim];
+                    float dot = 0.0f;
+                    for (int d = 0; d < cb_dim; d++) dot += q[d] * c[d];
+                    float dist = cb_norms[j] - 2.0f * dot;
+                    if (dist < best_dist) { best_dist = dist; best_idx = j; }
+                }
+                out_codes[code_offset + cb][t] = best_idx;
+
+                // Subtract quantized vector from residual
+                if (residual && cb < n_cb - 1) {
+                    const float * c = &codebook[best_idx * cb_dim];
+                    for (int d = 0; d < cb_dim; d++) {
+                        residual_buf[t * cb_dim + d] -= c[d];
+                    }
+                }
+            }
+        }
+    };
+
+    // Semantic: 1 codebook, no residual
+    {
+        std::vector<std::vector<float>> cbs = { model_.sem_codebook_data };
+        project_and_quantize(model_.sem_input_proj_data, cbs, 1, false, 0);
+    }
+
+    // Acoustic: 15 codebooks, residual
+    project_and_quantize(model_.acou_input_proj_data, model_.acou_codebook_data,
+                          n_acoustic, true, 1);
+}
+
 std::vector<std::vector<int32_t>> CodecEncoder::encode(const float * audio, int n_samples) {
-    if (!loaded_ || !impl_->session) {
+    if (!model_.ctx) {
         error_ = "Codec encoder not loaded";
         return {};
     }
 
-    std::vector<float> audio_buf(audio, audio + n_samples);
-    int64_t audio_shape[] = {1, (int64_t)n_samples};
+    const auto & cfg = model_.config;
 
-    OrtValue * input_tensor = nullptr;
-    OrtValue * output_tensor = nullptr;
+    struct ggml_cgraph * gf = build_graph(n_samples);
 
-    auto cleanup = [&]() {
-        if (input_tensor) ort_api->ReleaseValue(input_tensor);
-        if (output_tensor) ort_api->ReleaseValue(output_tensor);
-    };
-
-    OrtStatus * s = ort_api->CreateTensorWithDataAsOrtValue(
-        impl_->mem_info, audio_buf.data(), audio_buf.size() * sizeof(float),
-        audio_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &input_tensor);
-    if (s) {
-        error_ = std::string("Failed to create audio tensor: ") + ort_api->GetErrorMessage(s);
-        ort_api->ReleaseStatus(s);
-        cleanup();
+    if (!ggml_backend_sched_alloc_graph(state_.sched, gf)) {
+        error_ = "Failed to allocate graph";
         return {};
     }
 
-    const char * input_names[] = {"input_values"};
-    const char * output_names[] = {"audio_codes"};
+    // Set audio input
+    struct ggml_tensor * audio_tensor = ggml_graph_get_tensor(gf, "audio");
+    ggml_backend_tensor_set(audio_tensor, audio, 0, n_samples * sizeof(float));
 
-    s = ort_api->Run(impl_->session, nullptr,
-                      input_names, (const OrtValue * const *)&input_tensor, 1,
-                      output_names, 1, &output_tensor);
-    if (s) {
-        error_ = std::string("Codec encoder inference failed: ") + ort_api->GetErrorMessage(s);
-        ort_api->ReleaseStatus(s);
-        cleanup();
-        return {};
+    // Compute T_enc for position IDs and mask
+    int T0 = n_samples;
+    int T1 = (T0 - 1) / 4 + 1;
+    int T2 = (T1 - 1) / 5 + 1;
+    int T3 = (T2 - 1) / 6 + 1;
+    int T4 = (T3 - 1) / 8 + 1;
+    int T_enc = T4;
+
+    // Set position IDs
+    struct ggml_tensor * pos_tensor = ggml_graph_get_tensor(gf, "pos_ids");
+    if (pos_tensor) {
+        std::vector<int32_t> pos(T_enc);
+        for (int i = 0; i < T_enc; i++) pos[i] = i;
+        ggml_backend_tensor_set(pos_tensor, pos.data(), 0, T_enc * sizeof(int32_t));
     }
 
-    OrtTensorTypeAndShapeInfo * info = nullptr;
-    (void)ort_api->GetTensorTypeAndShape(output_tensor, &info);
-    size_t n_dims = 0;
-    (void)ort_api->GetDimensionsCount(info, &n_dims);
-    std::vector<int64_t> dims(n_dims);
-    (void)ort_api->GetDimensions(info, dims.data(), n_dims);
-    ort_api->ReleaseTensorTypeAndShapeInfo(info);
-
-    if (n_dims < 2) {
-        error_ = "Unexpected output shape from codec encoder";
-        cleanup();
-        return {};
-    }
-
-    int T, num_codebooks;
-    if (n_dims == 3) {
-        T = (int)dims[1];
-        num_codebooks = (int)dims[2];
-    } else {
-        T = (int)dims[0];
-        num_codebooks = (int)dims[1];
-    }
-
-    if (num_codebooks > 16) num_codebooks = 16;
-
-    int64_t * data = nullptr;
-    (void)ort_api->GetTensorMutableData(output_tensor, (void **)&data);
-
-    std::vector<std::vector<int32_t>> codes(num_codebooks, std::vector<int32_t>(T));
-    if (data) {
-        for (int t = 0; t < T; t++) {
-            for (int c = 0; c < num_codebooks; c++) {
-                codes[c][t] = (int32_t)data[t * num_codebooks + c];
+    // Set attention mask (causal + sliding window) — must be F16 for flash_attn_ext
+    struct ggml_tensor * mask_tensor = ggml_graph_get_tensor(gf, "attn_mask");
+    if (mask_tensor) {
+        std::vector<ggml_fp16_t> mask(T_enc * T_enc);
+        for (int i = 0; i < T_enc; i++) {
+            for (int j = 0; j < T_enc; j++) {
+                bool causal_ok = j <= i;
+                bool window_ok = (i - j) < cfg.sliding_window;
+                float val = (causal_ok && window_ok) ? 0.0f : -INFINITY;
+                mask[i * T_enc + j] = ggml_fp32_to_fp16(val);
             }
         }
+        ggml_backend_tensor_set(mask_tensor, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
     }
 
-    cleanup();
+    // Compute
+    if (ggml_backend_sched_graph_compute(state_.sched, gf) != GGML_STATUS_SUCCESS) {
+        error_ = "Failed to compute codec encoder graph";
+        ggml_backend_sched_reset(state_.sched);
+        return {};
+    }
 
-    fprintf(stderr, "Codec encoder: %d codebooks x %d frames (%.1f sec at 12.5 Hz)\n",
-            num_codebooks, T, (float)T / 12.5f);
+    // Extract encoder output
+    struct ggml_tensor * out_tensor = ggml_graph_get_tensor(gf, "encoder_out");
+    if (!out_tensor) {
+        error_ = "Failed to find encoder output tensor";
+        ggml_backend_sched_reset(state_.sched);
+        return {};
+    }
+
+    // Output shape: ne[0]=H=512, ne[1]=T_out
+    // In memory, ne[0] varies fastest: data[t * H + h] — matches rvq_encode's access pattern
+    int out_dim = (int)out_tensor->ne[0];  // H = 512
+    int T_out = (int)out_tensor->ne[1];
+
+    std::vector<float> features(T_out * out_dim);
+    ggml_backend_tensor_get(out_tensor, features.data(), 0, features.size() * sizeof(float));
+
+    ggml_backend_sched_reset(state_.sched);
+
+    // RVQ quantization on CPU
+    std::vector<std::vector<int32_t>> codes;
+    rvq_encode(features.data(), T_out, codes);
+
     return codes;
 }
 
-#endif // VOCAL_ONNX_CODEC_ENCODER
+void free_codec_encoder_model(codec_encoder_model & model) {
+    if (model.buffer) {
+        ggml_backend_buffer_free(model.buffer);
+        model.buffer = nullptr;
+    }
+    if (model.ctx) {
+        ggml_free(model.ctx);
+        model.ctx = nullptr;
+    }
+    model.tensors.clear();
+}
 
 } // namespace vocal_tts

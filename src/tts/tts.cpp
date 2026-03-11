@@ -83,16 +83,13 @@ bool TTS::load(const std::string & model_path,
 
 bool TTS::load_encoders(const std::string & codec_encoder_path,
                          const std::string & speaker_encoder_path) {
-#ifdef VOCAL_ONNX_CODEC_ENCODER
-    codec_encoder_ = std::make_unique<CodecEncoder>();
-    if (!codec_encoder_->load(codec_encoder_path)) {
-        error_ = "Failed to load codec encoder: " + codec_encoder_->get_error();
-        return false;
+    if (!codec_encoder_path.empty()) {
+        codec_encoder_ = std::make_unique<CodecEncoder>();
+        if (!codec_encoder_->load(codec_encoder_path)) {
+            error_ = "Failed to load codec encoder: " + codec_encoder_->get_error();
+            return false;
+        }
     }
-#else
-    (void)codec_encoder_path;
-    fprintf(stderr, "Note: Codec encoder (ONNX) not compiled in. ICL voice cloning requires pre-saved voice profiles.\n");
-#endif
 
     // Speaker encoder loads from GGUF (main model file or separate GGUF)
     speaker_encoder_ = std::make_unique<SpeakerEncoder>();
@@ -782,7 +779,6 @@ bool TTS::encode_voice_profile(const std::string & ref_audio_path,
     }
 
     // Encode codec codes
-#ifdef VOCAL_ONNX_CODEC_ENCODER
     if (!codec_encoder_) {
         error_ = "Codec encoder not loaded";
         return false;
@@ -792,11 +788,6 @@ bool TTS::encode_voice_profile(const std::string & ref_audio_path,
         error_ = "Codec encoder failed: " + codec_encoder_->get_error();
         return false;
     }
-#else
-    error_ = "Voice profile encoding requires codec encoder (ONNX). "
-             "Rebuild with -DVOCAL_ONNX_CODEC_ENCODER=ON";
-    return false;
-#endif
 
     out_profile.ref_text = ref_text;
     return true;
@@ -892,7 +883,6 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
 
         // For ICL mode: also encode to codec codes and tokenize ref text
         if (is_icl) {
-#ifdef VOCAL_ONNX_CODEC_ENCODER
             if (!codec_encoder_) {
                 result.error_msg = "Codec encoder not loaded for ICL mode";
                 return result;
@@ -905,11 +895,6 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
             ref_text_tokens = tokenizer_.encode(params.ref_text);
             fprintf(stderr, "Reference text tokens: %zu, codec frames: %zu\n",
                     ref_text_tokens.size(), ref_codes[0].size());
-#else
-            result.error_msg = "ICL voice cloning requires codec encoder (ONNX). "
-                               "Use a pre-saved voice profile (--voice) or rebuild with -DVOCAL_ONNX_CODEC_ENCODER=ON";
-            return result;
-#endif
         }
 
         result.t_encode_ms = get_time_ms() - t_enc_start;

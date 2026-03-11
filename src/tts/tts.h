@@ -71,9 +71,7 @@ private:
     qwen3::Qwen3TalkerLLM talker_;
     TTSTokenizer tokenizer_;
     std::unique_ptr<AudioDecoder> decoder_;
-#ifdef VOCAL_ONNX_CODEC_ENCODER
     std::unique_ptr<CodecEncoder> codec_encoder_;
-#endif
     std::unique_ptr<SpeakerEncoder> speaker_encoder_;
 
     bool loaded_ = false;
