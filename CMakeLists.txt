@@ -182,7 +182,7 @@ target_include_directories(vocal_tts_codec PUBLIC
 target_link_directories(vocal_tts_codec PUBLIC ${GGML_LINK_DIRS})
 target_link_libraries(vocal_tts_codec PUBLIC ${GGML_LIBS} vocal_tts_gguf_loader)
 
-# --- TTS encoder (speaker encoder via GGML + optional codec encoder via ONNX) ---
+# --- TTS encoder (speaker encoder + codec encoder via GGML) ---
 add_library(vocal_tts_encoder STATIC
     src/tts/tts_encoder.cpp
 )
