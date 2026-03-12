@@ -113,7 +113,8 @@ struct Qwen3TalkerState {
 // Code predictor config (5-layer transformer, standard 1D RoPE)
 struct Qwen3CodePredictorConfig {
     int32_t vocab_size = 2048;       // codec vocab (smaller than talker's 3072)
-    int32_t hidden_size = 1024;
+    int32_t hidden_size = 1024;      // transformer internal dimension
+    int32_t input_dim = 1024;        // input/embedding dimension (= talker hidden_size)
     int32_t n_layers = 5;
     int32_t n_heads = 16;
     int32_t n_kv_heads = 8;
@@ -122,6 +123,7 @@ struct Qwen3CodePredictorConfig {
     float rms_norm_eps = 1e-6f;
     float rope_theta = 10000.0f;     // standard RoPE (NOT 1M like talker)
     int32_t num_code_groups = 16;    // total codebooks (code_0 from talker + 15 predicted)
+    bool has_mtp_proj = false;       // true when input_dim != hidden_size (1.7B)
 };
 
 // Code predictor model weights
@@ -129,10 +131,15 @@ struct Qwen3CodePredictorModel {
     Qwen3CodePredictorConfig config;
 
     // Per-codebook embeddings: codec_embd[i] embeds codebook i+1
+    // Dimension = input_dim (= talker hidden_size, may differ from hidden_size)
     std::vector<struct ggml_tensor *> codec_embd;  // [num_code_groups - 1]
 
     // Per-codebook LM heads: lm_head[i] predicts codebook i+1
     std::vector<struct ggml_tensor *> lm_head;     // [num_code_groups - 1]
+
+    // Input projection: input_dim → hidden_size (only for 1.7B where they differ)
+    struct ggml_tensor * mtp_proj_w = nullptr;
+    struct ggml_tensor * mtp_proj_b = nullptr;
 
     // Transformer layers (same structure as talker layers)
     std::vector<Qwen3TalkerLayer> layers;

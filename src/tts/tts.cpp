@@ -605,10 +605,16 @@ void TTS::generate_codes_v2(const std::vector<float> & prompt_embeds,
     }
 
     // Sampling parameters
-    const float temperature = 0.9f;
-    const int top_k = 50;
-    const float rep_penalty = 1.05f;
-    std::mt19937 rng(42);
+    const float temperature = params.temperature;
+    const int top_k = params.top_k;
+    const float rep_penalty = params.rep_penalty;
+    uint32_t seed = params.seed;
+    if (seed == 0) {
+        std::random_device rd;
+        seed = rd();
+    }
+    std::mt19937 rng(seed);
+    fprintf(stderr, "  Seed: %u\n", seed);
 
     std::vector<int32_t> generated_codes;
 

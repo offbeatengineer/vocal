@@ -35,10 +35,18 @@ static int write_wav(const char * path, const std::vector<float> & audio, int sa
     return 0;
 }
 
+struct vocal_sampling_params {
+    float temperature;
+    int top_k;
+    float rep_penalty;
+    unsigned int seed;
+};
+
 int vocal_tts_run(const char * model_path, const char * tokenizer_path,
                   const char * decoder_path, const char * text,
                   const char * output_path,
-                  int n_threads, float speed, bool print_timing) {
+                  int n_threads, float speed, bool print_timing,
+                  struct vocal_sampling_params sampling) {
     ggml_log_set(ggml_log_quiet_tts, nullptr);
 
     fprintf(stderr, "vocal tts\n");
@@ -59,6 +67,10 @@ int vocal_tts_run(const char * model_path, const char * tokenizer_path,
     params.n_threads = n_threads;
     params.speed = speed;
     params.print_timing = print_timing;
+    params.temperature = sampling.temperature;
+    params.top_k = sampling.top_k;
+    params.rep_penalty = sampling.rep_penalty;
+    params.seed = sampling.seed;
 
     auto result = tts.synthesize(text, params);
 
@@ -84,7 +96,8 @@ int vocal_tts_clone(const char * model_path, const char * tokenizer_path,
                     const char * spk_encoder_path,
                     const char * ref_audio_path, const char * ref_text,
                     const char * text, const char * output_path,
-                    int n_threads, float speed, bool print_timing) {
+                    int n_threads, float speed, bool print_timing,
+                    struct vocal_sampling_params sampling) {
     ggml_log_set(ggml_log_quiet_tts, nullptr);
 
     fprintf(stderr, "vocal clone\n");
@@ -116,6 +129,10 @@ int vocal_tts_clone(const char * model_path, const char * tokenizer_path,
     params.n_threads = n_threads;
     params.speed = speed;
     params.print_timing = print_timing;
+    params.temperature = sampling.temperature;
+    params.top_k = sampling.top_k;
+    params.rep_penalty = sampling.rep_penalty;
+    params.seed = sampling.seed;
     params.ref_audio_path = ref_audio_path;
     if (ref_text && ref_text[0]) {
         params.ref_text = ref_text;
@@ -191,7 +208,8 @@ int vocal_tts_save_voice(const char * model_path, const char * tokenizer_path,
 int vocal_tts_with_voice(const char * model_path, const char * tokenizer_path,
                           const char * decoder_path, const char * voice_path,
                           const char * text, const char * output_path,
-                          int n_threads, float speed, bool print_timing) {
+                          int n_threads, float speed, bool print_timing,
+                          struct vocal_sampling_params sampling) {
     ggml_log_set(ggml_log_quiet_tts, nullptr);
 
     fprintf(stderr, "vocal tts --voice\n");
@@ -211,6 +229,10 @@ int vocal_tts_with_voice(const char * model_path, const char * tokenizer_path,
     params.n_threads = n_threads;
     params.speed = speed;
     params.print_timing = print_timing;
+    params.temperature = sampling.temperature;
+    params.top_k = sampling.top_k;
+    params.rep_penalty = sampling.rep_penalty;
+    params.seed = sampling.seed;
     params.voice_profile = voice_path;
 
     auto result = tts.synthesize(text, params);

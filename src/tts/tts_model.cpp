@@ -183,18 +183,24 @@ bool Qwen3TalkerLLM::parse_config(struct gguf_context * ctx) {
     cp.n_layers = get_u32("qwen3-tts.code_predictor.layer_count", 5);
     cp.vocab_size = get_u32("qwen3-tts.code_predictor.vocab_size", 2048);
     cp.num_code_groups = get_u32("qwen3-tts.num_code_groups", 16);
-    // Code predictor shares hidden_size, n_heads, n_kv_heads, head_dim, intermediate_size with talker
-    cp.hidden_size = cfg.hidden_size;
+    // Code predictor may have its own hidden_size (1.7B: 1024 vs talker's 2048)
+    cp.hidden_size = get_u32("qwen3-tts.code_predictor.hidden_size", cfg.hidden_size);
+    cp.intermediate_size = get_u32("qwen3-tts.code_predictor.intermediate_size", cfg.intermediate_size);
     cp.n_heads = cfg.n_heads;
     cp.n_kv_heads = cfg.n_kv_heads;
     cp.head_dim = cfg.head_dim;
-    cp.intermediate_size = cfg.intermediate_size;
     cp.rms_norm_eps = cfg.rms_norm_eps;
     // Code predictor uses standard RoPE with theta=10000 (NOT MRoPE with 1M)
     cp.rope_theta = 10000.0f;
+    // Input dimension = talker hidden_size (embeddings are in this space)
+    cp.input_dim = cfg.hidden_size;
+    cp.has_mtp_proj = (cp.input_dim != cp.hidden_size);
 
     fprintf(stderr, "Code predictor: layers=%d, vocab=%d, num_code_groups=%d, rope_theta=%.0f\n",
             cp.n_layers, cp.vocab_size, cp.num_code_groups, cp.rope_theta);
+    if (cp.has_mtp_proj) {
+        fprintf(stderr, "Code predictor: input projection %d -> %d\n", cp.input_dim, cp.hidden_size);
+    }
 
     return true;
 }
@@ -286,6 +292,10 @@ bool Qwen3TalkerLLM::create_tensors(struct gguf_context * ctx, struct ggml_conte
             // Code predictor tensors
             if (strcmp(name, "code_pred.output_norm.weight") == 0) {
                 code_pred_.output_norm = tensor;
+            } else if (strcmp(name, "code_pred.mtp_proj.weight") == 0) {
+                code_pred_.mtp_proj_w = tensor;
+            } else if (strcmp(name, "code_pred.mtp_proj.bias") == 0) {
+                code_pred_.mtp_proj_b = tensor;
             } else if (strstr(name, "code_pred.codec_embd.")) {
                 int idx = -1;
                 if (sscanf(name, "code_pred.codec_embd.%d.weight", &idx) == 1 &&
@@ -993,10 +1003,18 @@ struct ggml_cgraph * Qwen3TalkerLLM::build_code_pred_graph(int32_t n_tokens, int
     ggml_set_name(inp_pos, "cp_pos");
     ggml_set_input(inp_pos);
 
-    // Pre-computed embeddings input
-    struct ggml_tensor * cur = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cp.hidden_size, n_tokens);
+    // Pre-computed embeddings input (input_dim may differ from hidden_size in 1.7B)
+    struct ggml_tensor * cur = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cp.input_dim, n_tokens);
     ggml_set_name(cur, "cp_embeds");
     ggml_set_input(cur);
+
+    // Input projection: input_dim → hidden_size (1.7B only)
+    if (cp.has_mtp_proj && code_pred_.mtp_proj_w) {
+        cur = ggml_mul_mat(ctx0, code_pred_.mtp_proj_w, cur);
+        if (code_pred_.mtp_proj_b) {
+            cur = ggml_add(ctx0, cur, code_pred_.mtp_proj_b);
+        }
+    }
 
     const float eps = cp.rms_norm_eps;
     const int n_head = cp.n_heads;
@@ -1121,8 +1139,9 @@ struct ggml_cgraph * Qwen3TalkerLLM::build_code_pred_graph(int32_t n_tokens, int
 bool Qwen3TalkerLLM::predict_codes(const float * talker_hidden, int32_t code_0,
                                      std::vector<int32_t> & out_codes) {
     const auto & cp = code_pred_.config;
-    const int H = cp.hidden_size;
-    const int V = cp.vocab_size;  // 2048
+    const int D = cp.input_dim;     // embedding dimension (= talker hidden_size)
+    const int H = cp.hidden_size;   // transformer internal dimension
+    const int V = cp.vocab_size;    // 2048
     const int n_codebooks = cp.num_code_groups - 1;  // 15
 
     out_codes.resize(n_codebooks);
@@ -1135,9 +1154,9 @@ bool Qwen3TalkerLLM::predict_codes(const float * talker_hidden, int32_t code_0,
 
     // Step 1: Prefill with [talker_hidden_state, talker_codec_embd(code_0)]
     // Include lm_head[0] in the graph to compute logits on GPU
-    std::vector<float> prefill_embeds(2 * H);
-    memcpy(prefill_embeds.data(), talker_hidden, H * sizeof(float));
-    compute_codec_embedding(code_0, prefill_embeds.data() + H);
+    std::vector<float> prefill_embeds(2 * D);
+    memcpy(prefill_embeds.data(), talker_hidden, D * sizeof(float));
+    compute_codec_embedding(code_0, prefill_embeds.data() + D);
 
     int32_t prefill_pos[2] = {0, 1};
 
@@ -1148,7 +1167,7 @@ bool Qwen3TalkerLLM::predict_codes(const float * talker_hidden, int32_t code_0,
     }
 
     struct ggml_tensor * cp_embeds = ggml_graph_get_tensor(gf, "cp_embeds");
-    ggml_backend_tensor_set(cp_embeds, prefill_embeds.data(), 0, 2 * H * sizeof(float));
+    ggml_backend_tensor_set(cp_embeds, prefill_embeds.data(), 0, 2 * D * sizeof(float));
 
     struct ggml_tensor * cp_pos = ggml_graph_get_tensor(gf, "cp_pos");
     ggml_backend_tensor_set(cp_pos, prefill_pos, 0, 2 * sizeof(int32_t));
@@ -1183,7 +1202,7 @@ bool Qwen3TalkerLLM::predict_codes(const float * talker_hidden, int32_t code_0,
     int32_t n_past = 2;
     for (int i = 1; i < n_codebooks; i++) {
         // Embed previous code with code_pred.codec_embd[i-1]
-        std::vector<float> step_embed(H);
+        std::vector<float> step_embed(D);
         compute_code_pred_embedding(i - 1, out_codes[i - 1], step_embed.data());
 
         int32_t step_pos = n_past;
@@ -1196,7 +1215,7 @@ bool Qwen3TalkerLLM::predict_codes(const float * talker_hidden, int32_t code_0,
         }
 
         cp_embeds = ggml_graph_get_tensor(gf, "cp_embeds");
-        ggml_backend_tensor_set(cp_embeds, step_embed.data(), 0, H * sizeof(float));
+        ggml_backend_tensor_set(cp_embeds, step_embed.data(), 0, D * sizeof(float));
 
         cp_pos = ggml_graph_get_tensor(gf, "cp_pos");
         ggml_backend_tensor_set(cp_pos, &step_pos, 0, sizeof(int32_t));
@@ -1222,13 +1241,13 @@ bool Qwen3TalkerLLM::predict_codes(const float * talker_hidden, int32_t code_0,
 }
 
 void Qwen3TalkerLLM::compute_code_pred_embedding(int32_t codebook_idx, int32_t token_id, float * out) const {
-    const int H = code_pred_.config.hidden_size;
+    const int D = code_pred_.config.input_dim;  // embedding dim (= talker hidden_size)
 
-    std::vector<ggml_fp16_t> row_f16(H);
+    std::vector<ggml_fp16_t> row_f16(D);
     ggml_backend_tensor_get(code_pred_.codec_embd[codebook_idx], row_f16.data(),
-                            (size_t)token_id * H * sizeof(ggml_fp16_t),
-                            H * sizeof(ggml_fp16_t));
-    ggml_fp16_to_fp32_row(row_f16.data(), out, H);
+                            (size_t)token_id * D * sizeof(ggml_fp16_t),
+                            D * sizeof(ggml_fp16_t));
+    ggml_fp16_to_fp32_row(row_f16.data(), out, D);
 }
 
 void Qwen3TalkerLLM::compute_text_embedding(int32_t token_id, float * out) const {

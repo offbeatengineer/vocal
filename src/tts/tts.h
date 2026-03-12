@@ -22,6 +22,12 @@ struct tts_params {
     std::string speaker = "Vivian";  // Default speaker
     std::string language = "Auto";   // Auto-detect
 
+    // Sampling parameters
+    float temperature = 0.9f;
+    int32_t top_k = 50;
+    float rep_penalty = 1.05f;
+    uint32_t seed = 0;           // 0 = random (std::random_device)
+
     // Voice cloning parameters
     std::string ref_audio_path;   // Reference audio for voice cloning (WAV, 24kHz)
     std::string ref_text;         // Transcript of reference audio (for ICL mode)

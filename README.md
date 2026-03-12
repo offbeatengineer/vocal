@@ -2,7 +2,7 @@
 
 Local voice toolkit — speech recognition, synthesis, and voice cloning. No cloud API, no Python, no Node.js. Single binary, runs on GPU.
 
-Built on [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) and [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-0.6B) with [GGML](https://github.com/ggerganov/ggml) inference.
+Built on [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) and [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-0.6B) with [GGML](https://github.com/ggerganov/ggml) inference. Supports both 0.6B and 1.7B model sizes.
 
 ## Quick Start
 
@@ -54,6 +54,9 @@ For timing instrumentation: `make timing`
 # Basic transcription
 ./vocal asr -f audio.wav
 
+# Use the 1.7B model for higher quality
+./vocal asr --large -f audio.wav
+
 # JSON output with timing
 ./vocal asr -f audio.wav --json
 
@@ -62,9 +65,6 @@ For timing instrumentation: `make timing`
 
 # Save to file
 ./vocal asr -f audio.wav -o transcript.txt
-
-# Use a specific model file
-./vocal asr -f audio.wav -m /path/to/model.gguf
 ```
 
 ### Text-to-Speech (TTS)
@@ -75,6 +75,9 @@ For timing instrumentation: `make timing`
 
 # Synthesize speech
 ./vocal tts -t "Hello world" -o output.wav
+
+# Use the 1.7B model for higher quality
+./vocal tts --large -t "Hello world" -o output.wav
 
 # Read from stdin
 echo "Hello world" | ./vocal tts --stdin -o output.wav
@@ -90,11 +93,19 @@ echo "Hello world" | ./vocal tts --stdin -o output.wav
 ./vocal clone -f reference.wav --ref-text "What the speaker says in the reference" \
   -t "Text to synthesize in the cloned voice" -o output.wav
 
+# Use the 1.7B model for higher quality
+./vocal clone --large -f reference.wav --ref-text "What the speaker says" \
+  -t "Text to synthesize" -o output.wav
+
 # Save a voice profile for reuse (skips re-encoding each time)
 ./vocal clone -f reference.wav --ref-text "What the speaker says" --save myvoice
 
-# Use a saved voice profile with TTS
+# Save with 1.7B model (voice profiles are model-size-specific)
+./vocal clone --large -f reference.wav --ref-text "What the speaker says" --save myvoice-large
+
+# Use a saved voice profile with TTS (match the model size used during save)
 ./vocal tts --voice myvoice -t "Text to synthesize" -o output.wav
+./vocal tts --large --voice myvoice-large -t "Text to synthesize" -o output.wav
 
 # List saved voice profiles
 ./vocal voices
@@ -103,10 +114,17 @@ echo "Hello world" | ./vocal tts --stdin -o output.wav
 ### Model Management
 
 ```bash
-# Download models
+# Download models (0.6B, default)
 ./vocal download asr      # ASR model (~1.8 GB)
 ./vocal download tts      # TTS model + tokenizer + decoder (~1 GB)
 ./vocal download clone    # TTS models (same as tts; encoders are embedded)
+
+# Download 1.7B ASR model (~4.7 GB)
+./vocal download asr-large
+
+# Convert 1.7B TTS model (no hosted GGUF)
+huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-Base --local-dir /tmp/Qwen3-TTS-1.7B
+python tools/convert_tts_to_gguf.py -i /tmp/Qwen3-TTS-1.7B -o ~/.vocal/models/qwen3-tts-1.7b-f16.gguf
 
 # List downloaded models
 ./vocal models
