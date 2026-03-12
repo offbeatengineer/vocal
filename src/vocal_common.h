@@ -25,12 +25,12 @@
 #define VOCAL_TTS_MODEL_LARGE_NAME "qwen3-tts-1.7b-f16.gguf"
 #define VOCAL_TTS_SPK_ENCODER_LARGE_NAME VOCAL_TTS_MODEL_LARGE_NAME
 
-// HuggingFace URLs for GGUF models
-#define VOCAL_ASR_MODEL_URL "https://huggingface.co/FlippyDora/qwen3-asr-0.6b-GGUF/resolve/main/qwen3-asr-0.6b-f16.gguf"
-#define VOCAL_ASR_MODEL_LARGE_URL "https://huggingface.co/FlippyDora/qwen3-asr-1.7b-GGUF/resolve/main/qwen3-asr-1.7b-f16.gguf"
-#define VOCAL_TTS_MODEL_URL "https://huggingface.co/Volko76/Qwen3-TTS-12Hz-0.6B-Base-Qwen3tts.cpp_quants-GGUF/resolve/main/qwen3-tts-0.6b-f16.gguf"
-#define VOCAL_TTS_TOKENIZER_URL "https://huggingface.co/cgisky/qwen3-tts-custom-gguf/resolve/main/tokenizer/tokenizer.json"
-#define VOCAL_TTS_DECODER_URL "https://huggingface.co/Volko76/Qwen3-TTS-12Hz-0.6B-Base-Qwen3tts.cpp_quants-GGUF/resolve/main/qwen3-tts-tokenizer-f16.gguf"
+// HuggingFace URLs for GGUF models (offbeatengineer org)
+#define VOCAL_ASR_MODEL_URL "https://huggingface.co/offbeatengineer/qwen3-asr-gguf/resolve/main/qwen3-asr-0.6b-f16.gguf"
+#define VOCAL_ASR_MODEL_LARGE_URL "https://huggingface.co/offbeatengineer/qwen3-asr-gguf/resolve/main/qwen3-asr-1.7b-f16.gguf"
+#define VOCAL_TTS_MODEL_URL "https://huggingface.co/offbeatengineer/qwen3-tts-gguf/resolve/main/qwen3-tts-0.6b-f16.gguf"
+#define VOCAL_TTS_TOKENIZER_URL "https://huggingface.co/offbeatengineer/qwen3-tts-gguf/resolve/main/tokenizer.json"
+#define VOCAL_TTS_DECODER_URL "https://huggingface.co/offbeatengineer/qwen3-tts-gguf/resolve/main/qwen3-tts-tokenizer-f16.gguf"
 #define VOCAL_TTS_ENCODER_URL VOCAL_TTS_DECODER_URL
 #define VOCAL_TTS_SPK_ENCODER_URL VOCAL_TTS_MODEL_URL
 
