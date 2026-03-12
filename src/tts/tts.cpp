@@ -11,10 +11,7 @@
 #include <numeric>
 #include <random>
 
-// For reading reference audio
-extern "C" {
-    bool vocal_wav_read(const char * path, float ** samples, int * n_samples, int * sample_rate);
-}
+#include "audio_io.h"
 
 namespace vocal_tts {
 
@@ -109,29 +106,12 @@ bool TTS::load_reference_audio(const std::string & path, std::vector<float> & ou
     int n_samples = 0;
     int sample_rate = 0;
 
-    if (!vocal_wav_read(path.c_str(), &samples, &n_samples, &sample_rate)) {
+    if (!vocal_audio_read(path.c_str(), &samples, &n_samples, &sample_rate, 24000)) {
         error_ = "Failed to read reference audio: " + path;
         return false;
     }
 
-    if (sample_rate == 24000) {
-        out_audio.assign(samples, samples + n_samples);
-    } else {
-        // Simple linear resample to 24kHz
-        double ratio = 24000.0 / sample_rate;
-        int out_len = (int)(n_samples * ratio);
-        out_audio.resize(out_len);
-        for (int i = 0; i < out_len; i++) {
-            double src_idx = i / ratio;
-            int idx0 = (int)src_idx;
-            int idx1 = std::min(idx0 + 1, n_samples - 1);
-            double frac = src_idx - idx0;
-            out_audio[i] = (float)((1.0 - frac) * samples[idx0] + frac * samples[idx1]);
-        }
-        fprintf(stderr, "Resampled reference audio: %d Hz → 24000 Hz (%d → %d samples)\n",
-                sample_rate, n_samples, out_len);
-    }
-
+    out_audio.assign(samples, samples + n_samples);
     free(samples);
     return true;
 }

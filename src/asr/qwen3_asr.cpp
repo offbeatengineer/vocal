@@ -1,4 +1,5 @@
 #include "qwen3_asr.h"
+#include "audio_io.h"
 #include "timing.h"
 
 #include <cstdio>
@@ -50,20 +51,19 @@ transcribe_result Qwen3ASR::transcribe(const std::string & audio_path,
         return result;
     }
     
-    std::vector<float> samples;
-    int sample_rate;
-    
-    if (!load_wav(audio_path, samples, sample_rate)) {
+    float * raw_samples = nullptr;
+    int n_samples = 0;
+    int sample_rate = 0;
+
+    if (!vocal_audio_read(audio_path.c_str(), &raw_samples, &n_samples,
+                          &sample_rate, QWEN_SAMPLE_RATE)) {
         result.error_msg = "Failed to load audio file: " + audio_path;
         return result;
     }
-    
-    if (sample_rate != QWEN_SAMPLE_RATE) {
-        result.error_msg = "Audio must be 16kHz, got " + std::to_string(sample_rate) + " Hz";
-        return result;
-    }
-    
-    return transcribe_internal(samples.data(), samples.size(), params);
+
+    transcribe_result res = transcribe_internal(raw_samples, n_samples, params);
+    free(raw_samples);
+    return res;
 }
 
 transcribe_result Qwen3ASR::transcribe(const float * samples, int n_samples,
@@ -302,7 +302,16 @@ void Qwen3ASR::set_progress_callback(progress_callback_t callback) {
 }
 
 bool load_audio_file(const std::string & path, std::vector<float> & samples, int & sample_rate) {
-    return load_wav(path, samples, sample_rate);
+    float * raw = nullptr;
+    int n = 0;
+    int sr = 0;
+    if (!vocal_audio_read(path.c_str(), &raw, &n, &sr, 0)) {
+        return false;
+    }
+    samples.assign(raw, raw + n);
+    sample_rate = sr;
+    free(raw);
+    return true;
 }
 
 } // namespace qwen3_asr

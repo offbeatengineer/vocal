@@ -8,6 +8,15 @@
 extern "C" {
 #endif
 
+// Read an audio file (WAV, MP3, or FLAC) and return mono float samples
+// normalized to [-1, 1]. Format is detected by file extension.
+// If target_sample_rate > 0, resamples to that rate (e.g. 16000 for ASR).
+// If target_sample_rate == 0, returns at original sample rate.
+// Caller must free(*samples) when done.
+// Returns true on success.
+bool vocal_audio_read(const char * path, float ** samples, int * n_samples,
+                      int * sample_rate, int target_sample_rate);
+
 // Read a WAV file and return float samples normalized to [-1, 1].
 // Supports any sample rate and channel count — will convert to mono.
 // Caller must free(*samples) when done.
@@ -20,6 +29,12 @@ bool vocal_wav_read(const char * path, float ** samples, int * n_samples,
 // Returns true on success.
 bool vocal_wav_write(const char * path, const float * samples, int n_samples,
                      int sample_rate, int channels);
+
+// Resample audio using linear interpolation.
+// Caller must free(*out_samples) when done.
+// Returns true on success.
+bool vocal_resample(const float * samples, int n_samples, int src_rate,
+                    int dst_rate, float ** out_samples, int * out_n_samples);
 
 #ifdef __cplusplus
 }

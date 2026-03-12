@@ -86,7 +86,7 @@ static void print_asr_usage(void) {
         "Transcribe audio to text using Qwen3-ASR.\n"
         "\n"
         "Options:\n"
-        "  -f, --file <path>        Audio file (WAV, 16kHz mono) [required]\n"
+        "  -f, --file <path>        Audio file (WAV/MP3/FLAC, any sample rate) [required]\n"
         "  -o, --output <path>      Output file (default: stdout)\n"
         "  -m, --model <path>       Model file path (overrides default)\n"
         "  --large                  Use 1.7B model (default: 0.6B)\n"

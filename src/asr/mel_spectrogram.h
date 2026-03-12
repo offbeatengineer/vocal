@@ -29,10 +29,6 @@ struct MelFilters {
     std::vector<float> data;  // [n_mel x n_fft]
 };
 
-// Load audio from WAV file (16-bit PCM, mono, 16kHz)
-// Returns samples normalized to [-1, 1]
-bool load_wav(const std::string& path, std::vector<float>& samples, int& sample_rate);
-
 // Load mel filterbank from numpy .npy file
 // Expected shape: (201, 128) - will be transposed to (128, 201)
 bool load_mel_filters_npy(const std::string& path, MelFilters& filters);

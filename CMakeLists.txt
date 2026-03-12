@@ -101,6 +101,7 @@ add_library(vocal_asr STATIC
 )
 target_include_directories(vocal_asr PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/asr
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio
     ${GGML_DIR}/include
 )
 target_link_libraries(vocal_asr PUBLIC
@@ -108,10 +109,11 @@ target_link_libraries(vocal_asr PUBLIC
     vocal_encoder
     vocal_decoder
     vocal_injection
+    vocal_audio
     Threads::Threads
 )
 
-# --- Audio I/O library (dr_wav) ---
+# --- Audio I/O library (dr_wav, dr_mp3, dr_flac) ---
 add_library(vocal_audio STATIC
     src/audio/audio_io.c
 )
