@@ -2,6 +2,7 @@
 #define VOCAL_AUDIO_IO_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -29,6 +30,16 @@ bool vocal_wav_read(const char * path, float ** samples, int * n_samples,
 // Returns true on success.
 bool vocal_wav_write(const char * path, const float * samples, int n_samples,
                      int sample_rate, int channels);
+
+// Read audio from an in-memory buffer (WAV, MP3, or FLAC).
+// format_hint: "wav", "mp3", or "flac".
+// If target_sample_rate > 0, resamples to that rate.
+// Caller must free(*samples) when done.
+// Returns true on success.
+bool vocal_audio_read_memory(const void * data, size_t data_size,
+                             const char * format_hint,
+                             float ** samples, int * n_samples,
+                             int * sample_rate, int target_sample_rate);
 
 // Resample audio using linear interpolation.
 // Caller must free(*out_samples) when done.

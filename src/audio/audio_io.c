@@ -195,6 +195,144 @@ static bool vocal_flac_read(const char * path, float ** samples, int * n_samples
     return true;
 }
 
+// --- In-memory readers ---
+
+static bool vocal_wav_read_memory(const void * data, size_t data_size,
+                                   float ** samples, int * n_samples, int * sample_rate) {
+    drwav wav;
+    if (!drwav_init_memory(&wav, data, data_size, NULL)) {
+        fprintf(stderr, "error: failed to decode WAV from memory\n");
+        return false;
+    }
+
+    uint64_t total_frames = wav.totalPCMFrameCount;
+    float * raw = (float *)malloc(total_frames * wav.channels * sizeof(float));
+    if (!raw) { drwav_uninit(&wav); return false; }
+
+    uint64_t frames_read = drwav_read_pcm_frames_f32(&wav, total_frames, raw);
+
+    if (wav.channels > 1) {
+        float * mono = mix_to_mono(raw, frames_read, wav.channels);
+        free(raw);
+        if (!mono) { drwav_uninit(&wav); return false; }
+        *samples = mono;
+    } else {
+        *samples = raw;
+    }
+
+    *n_samples = (int)frames_read;
+    *sample_rate = (int)wav.sampleRate;
+    drwav_uninit(&wav);
+    return true;
+}
+
+static bool vocal_mp3_read_memory(const void * data, size_t data_size,
+                                   float ** samples, int * n_samples, int * sample_rate) {
+    drmp3 mp3;
+    if (!drmp3_init_memory(&mp3, data, data_size, NULL)) {
+        fprintf(stderr, "error: failed to decode MP3 from memory\n");
+        return false;
+    }
+
+    // Read in chunks (totalPCMFrameCount may be unknown)
+    size_t capacity = 1024 * 1024;
+    float * buf = (float *)malloc(capacity * mp3.channels * sizeof(float));
+    if (!buf) { drmp3_uninit(&mp3); return false; }
+
+    uint64_t total_read = 0;
+    while (1) {
+        if (total_read >= capacity) {
+            capacity *= 2;
+            float * tmp = (float *)realloc(buf, capacity * mp3.channels * sizeof(float));
+            if (!tmp) { free(buf); drmp3_uninit(&mp3); return false; }
+            buf = tmp;
+        }
+        uint64_t read = drmp3_read_pcm_frames_f32(&mp3, capacity - total_read,
+                            buf + total_read * mp3.channels);
+        if (read == 0) break;
+        total_read += read;
+    }
+
+    if (mp3.channels > 1) {
+        float * mono = mix_to_mono(buf, total_read, mp3.channels);
+        free(buf);
+        if (!mono) { drmp3_uninit(&mp3); return false; }
+        *samples = mono;
+    } else {
+        *samples = buf;
+    }
+
+    *n_samples = (int)total_read;
+    *sample_rate = (int)mp3.sampleRate;
+    drmp3_uninit(&mp3);
+    return true;
+}
+
+static bool vocal_flac_read_memory(const void * data, size_t data_size,
+                                    float ** samples, int * n_samples, int * sample_rate) {
+    drflac * flac = drflac_open_memory(data, data_size, NULL);
+    if (!flac) {
+        fprintf(stderr, "error: failed to decode FLAC from memory\n");
+        return false;
+    }
+
+    uint64_t total_frames = flac->totalPCMFrameCount;
+    float * raw = (float *)malloc(total_frames * flac->channels * sizeof(float));
+    if (!raw) { drflac_close(flac); return false; }
+
+    uint64_t frames_read = drflac_read_pcm_frames_f32(flac, total_frames, raw);
+
+    if (flac->channels > 1) {
+        float * mono = mix_to_mono(raw, frames_read, flac->channels);
+        free(raw);
+        if (!mono) { drflac_close(flac); return false; }
+        *samples = mono;
+    } else {
+        *samples = raw;
+    }
+
+    *n_samples = (int)frames_read;
+    *sample_rate = (int)flac->sampleRate;
+    drflac_close(flac);
+    return true;
+}
+
+bool vocal_audio_read_memory(const void * data, size_t data_size,
+                             const char * format_hint,
+                             float ** samples, int * n_samples,
+                             int * sample_rate, int target_sample_rate) {
+    bool ok;
+
+    if (format_hint && strcmp(format_hint, "mp3") == 0) {
+        ok = vocal_mp3_read_memory(data, data_size, samples, n_samples, sample_rate);
+    } else if (format_hint && strcmp(format_hint, "flac") == 0) {
+        ok = vocal_flac_read_memory(data, data_size, samples, n_samples, sample_rate);
+    } else {
+        // WAV or unknown — try WAV
+        ok = vocal_wav_read_memory(data, data_size, samples, n_samples, sample_rate);
+    }
+
+    if (!ok) return false;
+
+    // Resample if requested
+    if (target_sample_rate > 0 && *sample_rate != target_sample_rate) {
+        float * resampled = NULL;
+        int resampled_len = 0;
+        if (!vocal_resample(*samples, *n_samples, *sample_rate,
+                            target_sample_rate, &resampled, &resampled_len)) {
+            free(*samples);
+            *samples = NULL;
+            return false;
+        }
+        free(*samples);
+        *samples = resampled;
+        *n_samples = resampled_len;
+        *sample_rate = target_sample_rate;
+    }
+
+    return true;
+}
+
 // --- Unified reader ---
 
 static const char * get_extension(const char * path) {

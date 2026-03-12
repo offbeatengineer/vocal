@@ -222,6 +222,27 @@ target_link_libraries(vocal_tts PUBLIC
     Threads::Threads
 )
 
+# --- HTTP server ---
+add_library(vocal_server STATIC
+    src/server/vocal_server.cpp
+)
+target_include_directories(vocal_server PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/asr
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/tts
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+    ${GGML_DIR}/include
+)
+target_link_libraries(vocal_server PUBLIC
+    vocal_asr
+    vocal_tts
+    vocal_audio
+    vocal_model
+    Threads::Threads
+)
+
 # --- CLI executable ---
 # main.c is C but links C++ libraries, so we need CXX linkage
 add_executable(vocal
@@ -238,6 +259,7 @@ target_link_libraries(vocal PRIVATE
     vocal_tts
     vocal_audio
     vocal_model
+    vocal_server
 )
 
 # Link Metal framework on macOS for GPU

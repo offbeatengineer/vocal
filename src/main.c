@@ -1,5 +1,6 @@
 #include "vocal.h"
 #include "audio/audio_io.h"
+#include "server/vocal_server.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,6 +70,7 @@ static void print_usage(void) {
         "  asr          Transcribe audio to text\n"
         "  tts          Synthesize speech from text\n"
         "  clone        Clone a voice from reference audio\n"
+        "  serve        Start HTTP server\n"
         "  download     Download models\n"
         "  models       List downloaded models\n"
         "  version      Print version\n"
@@ -658,6 +660,79 @@ static int cmd_clone(int argc, char ** argv) {
                             n_threads, speed, print_timing, sampling);
 }
 
+// --- Serve subcommand ---
+
+static void print_serve_usage(void) {
+    fprintf(stderr,
+        "Usage: vocal serve [options]\n"
+        "\n"
+        "Start an HTTP server for ASR/TTS inference.\n"
+        "Models are loaded once at startup and reused across requests.\n"
+        "\n"
+        "Options:\n"
+        "  --asr                Load ASR model\n"
+        "  --tts                Load TTS model\n"
+        "  --large              Use 1.7B models (default: 0.6B)\n"
+        "  --port <n>           Port (default: 8080)\n"
+        "  --host <addr>        Bind address (default: 127.0.0.1)\n"
+        "  --threads <n>        Thread count (default: 4)\n"
+        "  --model-dir <path>   Models directory override\n"
+        "  -h, --help           Show this help\n"
+        "\n"
+        "At least one of --asr or --tts is required.\n"
+        "\n"
+        "Endpoints:\n"
+        "  GET  /health              Health check\n"
+        "  POST /v1/asr/transcribe   Transcribe audio (body: raw audio bytes)\n"
+        "  POST /v1/tts/synthesize   Synthesize speech (body: JSON)\n"
+        "  POST /v1/tts/clone        Voice cloning (body: multipart form)\n"
+        "  GET  /v1/voices           List voice profiles\n");
+}
+
+static int cmd_serve(int argc, char ** argv) {
+    struct vocal_serve_params params = {0};
+    params.host = "127.0.0.1";
+    params.port = 8080;
+    params.n_threads = 4;
+
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--asr") == 0) {
+            params.load_asr = true;
+        } else if (strcmp(argv[i], "--tts") == 0) {
+            params.load_tts = true;
+        } else if (strcmp(argv[i], "--large") == 0) {
+            params.use_large = true;
+        } else if (strcmp(argv[i], "--port") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: --port requires argument\n"); return VOCAL_ERR_ARGS; }
+            params.port = atoi(argv[i]);
+        } else if (strcmp(argv[i], "--host") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: --host requires argument\n"); return VOCAL_ERR_ARGS; }
+            params.host = argv[i];
+        } else if (strcmp(argv[i], "--threads") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: --threads requires argument\n"); return VOCAL_ERR_ARGS; }
+            params.n_threads = atoi(argv[i]);
+        } else if (strcmp(argv[i], "--model-dir") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: --model-dir requires argument\n"); return VOCAL_ERR_ARGS; }
+            params.model_dir = argv[i];
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_serve_usage();
+            return VOCAL_OK;
+        } else {
+            fprintf(stderr, "error: unknown option: %s\n", argv[i]);
+            print_serve_usage();
+            return VOCAL_ERR_ARGS;
+        }
+    }
+
+    if (!params.load_asr && !params.load_tts) {
+        fprintf(stderr, "error: at least one of --asr or --tts required\n\n");
+        print_serve_usage();
+        return VOCAL_ERR_ARGS;
+    }
+
+    return vocal_serve_run(&params);
+}
+
 // --- Download subcommand ---
 
 static void print_download_usage(void) {
@@ -765,6 +840,8 @@ int main(int argc, char ** argv) {
         return cmd_tts(argc - 2, argv + 2);
     } else if (strcmp(cmd, "clone") == 0) {
         return cmd_clone(argc - 2, argv + 2);
+    } else if (strcmp(cmd, "serve") == 0) {
+        return cmd_serve(argc - 2, argv + 2);
     } else if (strcmp(cmd, "voices") == 0) {
         vocal_voices_list();
         return VOCAL_OK;

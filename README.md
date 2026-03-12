@@ -22,6 +22,7 @@ make
 - **ASR**: Transcribe audio to text in 30+ languages (Qwen3-ASR, GPU-accelerated)
 - **TTS**: Text-to-speech synthesis (Qwen3-TTS, GPU-accelerated)
 - **Voice Cloning**: Clone voices from reference audio samples
+- **HTTP Server**: Load models once, serve many requests over HTTP
 
 ## Requirements
 
@@ -130,12 +131,56 @@ python tools/convert_tts_to_gguf.py -i /tmp/Qwen3-TTS-1.7B -o ~/.vocal/models/qw
 ./vocal models
 ```
 
+### HTTP Server
+
+Model loading takes 400ms–1.6s per invocation. The server mode loads models once at startup and serves many requests over HTTP, eliminating reload overhead.
+
+```bash
+# Start server with both models
+./vocal serve --asr --tts --port 8080
+
+# Or just ASR, with 1.7B model
+./vocal serve --asr --large --port 8080
+```
+
+Endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check + loaded model status |
+| `POST` | `/v1/asr/transcribe` | Transcribe audio (body: raw audio bytes) |
+| `POST` | `/v1/tts/synthesize` | Synthesize speech (body: JSON) |
+| `POST` | `/v1/tts/clone` | Voice cloning (body: multipart form) |
+| `GET` | `/v1/voices` | List saved voice profiles |
+
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# Transcribe audio
+curl -X POST http://localhost:8080/v1/asr/transcribe \
+  -H "Content-Type: audio/wav" --data-binary @audio.wav
+
+# Synthesize speech (returns WAV)
+curl -X POST http://localhost:8080/v1/tts/synthesize \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Hello world","speed":1.0}' -o output.wav
+
+# Clone a voice (multipart form)
+curl -X POST http://localhost:8080/v1/tts/clone \
+  -F audio=@ref.wav -F ref_text="Reference transcript" \
+  -F text="Text to synthesize" -o cloned.wav
+```
+
+ASR and TTS can run concurrently (separate GGML backends), but concurrent requests of the same type are serialized via mutex. Timing info is returned in `X-Vocal-*` response headers for TTS endpoints.
+
 ### All Commands
 
 ```
 vocal asr          Transcribe audio to text
 vocal tts          Synthesize speech from text
 vocal clone        Clone a voice from reference audio
+vocal serve        Start HTTP server
 vocal voices       List saved voice profiles
 vocal download     Download models
 vocal models       List downloaded models
@@ -169,6 +214,7 @@ Models are stored in `~/.vocal/models/` by default. Override with:
 
 - ASR engine based on [qwen3-asr.cpp](https://github.com/predict-woo/qwen3-asr.cpp) by predict-woo
 - Audio I/O via [dr_wav](https://github.com/mackron/dr_libs) by David Reid
+- HTTP server via [cpp-httplib](https://github.com/yhirose/cpp-httplib) by Yuji Hirose
 - Tensor inference via [GGML](https://github.com/ggerganov/ggml) by Georgi Gerganov
 
 ## License
