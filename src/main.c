@@ -318,9 +318,7 @@ static int cmd_tts(int argc, char ** argv) {
         if (!vocal_model_exists(tts_model_name, model_dir)) {
             fprintf(stderr, "error: TTS model not found at %s\n", model_path);
             if (use_large) {
-                fprintf(stderr, "No hosted GGUF for 1.7B. Convert it yourself:\n");
-                fprintf(stderr, "  huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-Base --local-dir /tmp/Qwen3-TTS-1.7B\n");
-                fprintf(stderr, "  python tools/convert_tts_to_gguf.py -i /tmp/Qwen3-TTS-1.7B -o %s\n", model_path);
+                fprintf(stderr, "Run: vocal download tts-large\n");
             } else {
                 fprintf(stderr, "Run: vocal download tts\n");
             }
@@ -560,7 +558,7 @@ static int cmd_clone(int argc, char ** argv) {
         if (!vocal_model_exists(spk_encoder_name, model_dir)) {
             fprintf(stderr, "error: Speaker encoder not found.\n");
             if (use_large) {
-                fprintf(stderr, "Convert the 1.7B model first (speaker encoder is embedded in the model GGUF).\n");
+                fprintf(stderr, "Run: vocal download clone-large\n");
             } else {
                 fprintf(stderr, "Run: vocal download clone\n");
             }
@@ -600,9 +598,7 @@ static int cmd_clone(int argc, char ** argv) {
         if (!vocal_model_exists(tts_model_name, model_dir)) {
             fprintf(stderr, "error: TTS model not found at %s\n", model_path);
             if (use_large) {
-                fprintf(stderr, "No hosted GGUF for 1.7B. Convert it yourself:\n");
-                fprintf(stderr, "  huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-Base --local-dir /tmp/Qwen3-TTS-1.7B\n");
-                fprintf(stderr, "  python tools/convert_tts_to_gguf.py -i /tmp/Qwen3-TTS-1.7B -o %s\n", model_path);
+                fprintf(stderr, "Run: vocal download tts-large\n");
             } else {
                 fprintf(stderr, "Run: vocal download tts\n");
             }
@@ -745,9 +741,9 @@ static void print_download_usage(void) {
         "  asr          Qwen3-ASR 0.6B\n"
         "  asr-large    Qwen3-ASR 1.7B\n"
         "  tts          Qwen3-TTS 0.6B + tokenizer + decoder\n"
+        "  tts-large    Qwen3-TTS 1.7B + tokenizer + decoder\n"
         "  clone        TTS models (same as tts; encoders are embedded)\n"
-        "\n"
-        "Note: No hosted GGUF for TTS 1.7B. Use tools/convert_tts_to_gguf.py to convert.\n"
+        "  clone-large  TTS 1.7B models (same as tts-large)\n"
         "\n"
         "Options:\n"
         "  --model-dir <path>   Override model storage directory\n"
@@ -789,8 +785,13 @@ static int cmd_download(int argc, char ** argv) {
         ret = vocal_model_download(VOCAL_TTS_TOKENIZER_URL, VOCAL_TTS_TOKENIZER_NAME, model_dir);
         if (ret != 0) return ret;
         return vocal_model_download(VOCAL_TTS_DECODER_URL, VOCAL_TTS_DECODER_NAME, model_dir);
+    } else if (strcmp(model_type, "tts-large") == 0) {
+        int ret = vocal_model_download(VOCAL_TTS_MODEL_LARGE_URL, VOCAL_TTS_MODEL_LARGE_NAME, model_dir);
+        if (ret != 0) return ret;
+        ret = vocal_model_download(VOCAL_TTS_TOKENIZER_URL, VOCAL_TTS_TOKENIZER_NAME, model_dir);
+        if (ret != 0) return ret;
+        return vocal_model_download(VOCAL_TTS_DECODER_URL, VOCAL_TTS_DECODER_NAME, model_dir);
     } else if (strcmp(model_type, "clone") == 0) {
-        // Download all TTS models + encoder models
         int ret = vocal_model_download(VOCAL_TTS_MODEL_URL, VOCAL_TTS_MODEL_NAME, model_dir);
         if (ret != 0) return ret;
         ret = vocal_model_download(VOCAL_TTS_TOKENIZER_URL, VOCAL_TTS_TOKENIZER_NAME, model_dir);
@@ -800,6 +801,16 @@ static int cmd_download(int argc, char ** argv) {
         ret = vocal_model_download(VOCAL_TTS_ENCODER_URL, VOCAL_TTS_ENCODER_NAME, model_dir);
         if (ret != 0) return ret;
         return vocal_model_download(VOCAL_TTS_SPK_ENCODER_URL, VOCAL_TTS_SPK_ENCODER_NAME, model_dir);
+    } else if (strcmp(model_type, "clone-large") == 0) {
+        int ret = vocal_model_download(VOCAL_TTS_MODEL_LARGE_URL, VOCAL_TTS_MODEL_LARGE_NAME, model_dir);
+        if (ret != 0) return ret;
+        ret = vocal_model_download(VOCAL_TTS_TOKENIZER_URL, VOCAL_TTS_TOKENIZER_NAME, model_dir);
+        if (ret != 0) return ret;
+        ret = vocal_model_download(VOCAL_TTS_DECODER_URL, VOCAL_TTS_DECODER_NAME, model_dir);
+        if (ret != 0) return ret;
+        ret = vocal_model_download(VOCAL_TTS_ENCODER_URL, VOCAL_TTS_ENCODER_NAME, model_dir);
+        if (ret != 0) return ret;
+        return vocal_model_download(VOCAL_TTS_SPK_ENCODER_LARGE_URL, VOCAL_TTS_SPK_ENCODER_LARGE_NAME, model_dir);
     } else {
         fprintf(stderr, "error: unknown model type: %s\n", model_type);
         print_download_usage();

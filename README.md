@@ -120,12 +120,10 @@ echo "Hello world" | ./vocal tts --stdin -o output.wav
 ./vocal download tts      # TTS model + tokenizer + decoder (~1 GB)
 ./vocal download clone    # TTS models (same as tts; encoders are embedded)
 
-# Download 1.7B ASR model (~4.7 GB)
-./vocal download asr-large
-
-# Convert 1.7B TTS model (no hosted GGUF)
-huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-Base --local-dir /tmp/Qwen3-TTS-1.7B
-python tools/convert_tts_to_gguf.py -i /tmp/Qwen3-TTS-1.7B -o ~/.vocal/models/qwen3-tts-1.7b-f16.gguf
+# Download 1.7B models
+./vocal download asr-large      # ASR 1.7B (~4.4 GB)
+./vocal download tts-large      # TTS 1.7B + tokenizer + decoder (~3.6 GB)
+./vocal download clone-large    # TTS 1.7B models for voice cloning
 
 # List downloaded models
 ./vocal models

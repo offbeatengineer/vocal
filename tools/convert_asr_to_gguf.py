@@ -158,6 +158,9 @@ class Qwen3ASRConverter:
         self.audio_ffn_dim = audio_config.get("encoder_ffn_dim", 3584)
         self.audio_num_mel_bins = audio_config.get("num_mel_bins", 128)
         self.audio_downsample_hidden_size = audio_config.get("downsample_hidden_size", 480)
+        self.audio_conv_out_dim = audio_config.get("output_dim", self.audio_d_model)
+        self.audio_n_window_infer = audio_config.get("n_window_infer", 800)
+        self.audio_layer_norm_eps = 1e-5
 
         # Text decoder parameters
         self.text_decoder_layers = text_config.get("num_hidden_layers", 28)
@@ -440,6 +443,23 @@ class Qwen3ASRConverter:
         writer.add_uint32(f"{arch}.audio.encoder.feed_forward_length", self.audio_ffn_dim)
         writer.add_uint32(f"{arch}.audio.num_mel_bins", self.audio_num_mel_bins)
         writer.add_uint32(f"{arch}.audio.conv_channels", self.audio_downsample_hidden_size)
+
+        # Audio/text params read by gguf_loader.cpp
+        writer.add_uint32("audio.encoder_layers", self.audio_encoder_layers)
+        writer.add_uint32("audio.d_model", self.audio_d_model)
+        writer.add_uint32("audio.attention_heads", self.audio_attention_heads)
+        writer.add_uint32("audio.ffn_dim", self.audio_ffn_dim)
+        writer.add_uint32("audio.conv_channels", self.audio_downsample_hidden_size)
+        writer.add_uint32("audio.conv_out_dim", self.audio_conv_out_dim)
+        writer.add_uint32("audio.num_mel_bins", self.audio_num_mel_bins)
+        writer.add_uint32("audio.n_window_infer", self.audio_n_window_infer)
+        writer.add_float32("audio.layer_norm_eps", self.audio_layer_norm_eps)
+        writer.add_uint32("text.hidden_size", self.text_hidden_size)
+        writer.add_uint32("text.decoder_layers", self.text_decoder_layers)
+        writer.add_uint32("text.attention_heads", self.text_attention_heads)
+        writer.add_uint32("text.num_key_value_heads", self.text_kv_heads)
+        writer.add_uint32("text.intermediate_size", self.text_intermediate_size)
+        writer.add_float32("text.rms_norm_eps", self.text_rms_norm_eps)
 
         # Special token IDs
         writer.add_uint32(f"{arch}.audio.start_token_id", self.audio_start_token_id)
