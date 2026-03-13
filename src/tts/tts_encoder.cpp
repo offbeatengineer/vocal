@@ -125,8 +125,6 @@ SpeakerEncoder::~SpeakerEncoder() {
 }
 
 bool SpeakerEncoder::load(const std::string & model_path) {
-    fprintf(stderr, "Loading speaker encoder from %s...\n", model_path.c_str());
-
     GGUFLoader loader;
     if (!loader.open(model_path)) {
         error_ = loader.get_error();
@@ -236,7 +234,7 @@ bool SpeakerEncoder::load(const std::string & model_path) {
 
     ggml_backend_dev_t device = ggml_backend_get_device(state_.backend);
     const char * device_name = device ? ggml_backend_dev_name(device) : "Unknown";
-    fprintf(stderr, "  SpeakerEncoder backend: %s\n", device_name);
+    (void)device_name;
 
     if (device && ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU) {
         state_.backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
@@ -258,7 +256,6 @@ bool SpeakerEncoder::load(const std::string & model_path) {
     state_.compute_meta.resize(ggml_tensor_overhead() * VOCAL_SPK_MAX_NODES + ggml_graph_overhead());
 
     loaded_ = true;
-    fprintf(stderr, "Speaker encoder loaded successfully (%d tensors)\n", spk_tensor_count);
     return true;
 }
 
@@ -580,8 +577,6 @@ std::vector<float> SpeakerEncoder::encode(const float * audio, int n_samples) {
         return {};
     }
 
-    fprintf(stderr, "Mel spectrogram: %d frames x %d mels\n", n_frames, model_.config.n_mels);
-
     struct ggml_cgraph * gf = build_graph(n_frames);
 
     if (!ggml_backend_sched_alloc_graph(state_.sched, gf)) {
@@ -616,7 +611,6 @@ std::vector<float> SpeakerEncoder::encode(const float * audio, int n_samples) {
 
     ggml_backend_sched_reset(state_.sched);
 
-    fprintf(stderr, "Speaker embedding: %zu dimensions\n", embedding.size());
     return embedding;
 }
 
@@ -658,8 +652,6 @@ CodecEncoder::~CodecEncoder() {
 }
 
 bool CodecEncoder::load(const std::string & model_path) {
-    fprintf(stderr, "Loading codec encoder from %s...\n", model_path.c_str());
-
     GGUFLoader loader;
     if (!loader.open(model_path)) {
         error_ = loader.get_error();
@@ -829,7 +821,7 @@ bool CodecEncoder::load(const std::string & model_path) {
 
     ggml_backend_dev_t device = ggml_backend_get_device(state_.backend);
     const char * device_name = device ? ggml_backend_dev_name(device) : "Unknown";
-    fprintf(stderr, "  CodecEncoder backend: %s\n", device_name);
+    (void)device_name;
 
     if (device && ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU) {
         state_.backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
@@ -845,7 +837,6 @@ bool CodecEncoder::load(const std::string & model_path) {
 
     state_.compute_meta.resize(ggml_tensor_overhead() * VOCAL_CODEC_ENC_MAX_NODES + ggml_graph_overhead());
 
-    fprintf(stderr, "Codec encoder loaded successfully (%d tensors)\n", enc_tensor_count);
     return true;
 }
 

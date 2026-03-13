@@ -170,14 +170,6 @@ bool Qwen3TalkerLLM::parse_config(struct gguf_context * ctx) {
         }
     }
 
-    fprintf(stderr, "Talker config: vocab=%d, codec=%d, hidden=%d, text_hidden=%d, layers=%d, heads=%d, kv_heads=%d, head_dim=%d\n",
-            cfg.vocab_size, cfg.codec_vocab_size, cfg.hidden_size, cfg.text_hidden_size,
-            cfg.n_layers, cfg.n_heads, cfg.n_kv_heads, cfg.head_dim);
-    fprintf(stderr, "MRoPE sections: [%d, %d, %d] (×2 → dims [%d, %d, %d], sum=%d)\n",
-            cfg.mrope_section[0], cfg.mrope_section[1], cfg.mrope_section[2],
-            cfg.mrope_section[0]*2, cfg.mrope_section[1]*2, cfg.mrope_section[2]*2,
-            (cfg.mrope_section[0]+cfg.mrope_section[1]+cfg.mrope_section[2])*2);
-
     // Code predictor config
     auto & cp = code_pred_.config;
     cp.n_layers = get_u32("qwen3-tts.code_predictor.layer_count", 5);
@@ -195,12 +187,6 @@ bool Qwen3TalkerLLM::parse_config(struct gguf_context * ctx) {
     // Input dimension = talker hidden_size (embeddings are in this space)
     cp.input_dim = cfg.hidden_size;
     cp.has_mtp_proj = (cp.input_dim != cp.hidden_size);
-
-    fprintf(stderr, "Code predictor: layers=%d, vocab=%d, num_code_groups=%d, rope_theta=%.0f\n",
-            cp.n_layers, cp.vocab_size, cp.num_code_groups, cp.rope_theta);
-    if (cp.has_mtp_proj) {
-        fprintf(stderr, "Code predictor: input projection %d -> %d\n", cp.input_dim, cp.hidden_size);
-    }
 
     return true;
 }
@@ -329,17 +315,6 @@ bool Qwen3TalkerLLM::create_tensors(struct gguf_context * ctx, struct ggml_conte
             }
         }
     }
-
-    // Verify code predictor tensors loaded
-    int loaded_embds = 0, loaded_heads = 0;
-    for (int i = 0; i < n_codebooks; i++) {
-        if (code_pred_.codec_embd[i]) loaded_embds++;
-        if (code_pred_.lm_head[i]) loaded_heads++;
-    }
-    fprintf(stderr, "Code predictor: loaded %d/%d embeddings, %d/%d lm_heads, %d/%d layers, norm=%s\n",
-            loaded_embds, n_codebooks, loaded_heads, n_codebooks,
-            (int)code_pred_.layers.size(), cp_cfg.n_layers,
-            code_pred_.output_norm ? "yes" : "no");
 
     return true;
 }

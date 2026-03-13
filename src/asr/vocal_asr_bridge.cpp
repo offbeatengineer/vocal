@@ -101,12 +101,6 @@ int vocal_asr_run(const char * model_path, const char * audio_path,
                   bool print_timing) {
     ggml_log_set(ggml_log_quiet, nullptr);
 
-    fprintf(stderr, "vocal asr\n");
-    fprintf(stderr, "  Model: %s\n", model_path);
-    fprintf(stderr, "  Audio: %s\n", audio_path);
-    fprintf(stderr, "  Threads: %d\n", n_threads);
-    fprintf(stderr, "\n");
-
     qwen3_asr::Qwen3ASR asr;
 
     if (!asr.load_model(model_path)) {
@@ -141,14 +135,18 @@ int vocal_asr_run(const char * model_path, const char * audio_path,
         }
         json += "  \"timing\": {\n";
         snprintf(buf, sizeof(buf),
+                 "    \"load_ms\": %lld,\n"
                  "    \"mel_ms\": %lld,\n"
                  "    \"encode_ms\": %lld,\n"
                  "    \"decode_ms\": %lld,\n"
-                 "    \"total_ms\": %lld\n",
+                 "    \"total_ms\": %lld,\n"
+                 "    \"audio_duration_s\": %.3f\n",
+                 (long long)result.t_load_ms,
                  (long long)result.t_mel_ms,
                  (long long)result.t_encode_ms,
                  (long long)result.t_decode_ms,
-                 (long long)result.t_total_ms);
+                 (long long)result.t_total_ms,
+                 result.audio_duration_s);
         json += buf;
         json += "  },\n";
         snprintf(buf, sizeof(buf), "  \"tokens\": %zu\n", result.tokens.size());
@@ -167,12 +165,6 @@ int vocal_asr_align(const char * model_path, const char * aligner_path,
                     const char * output_path, const char * language,
                     int n_threads, bool json_output, bool print_timing) {
     ggml_log_set(ggml_log_quiet, nullptr);
-
-    fprintf(stderr, "vocal align\n");
-    fprintf(stderr, "  ASR Model: %s\n", model_path ? model_path : "(none)");
-    fprintf(stderr, "  Aligner:   %s\n", aligner_path);
-    fprintf(stderr, "  Audio:     %s\n", audio_path);
-    fprintf(stderr, "\n");
 
     // Load audio
     float * raw_samples = nullptr;
@@ -263,7 +255,27 @@ int vocal_asr_align(const char * model_path, const char * aligner_path,
             if (i + 1 < align_result.words.size()) json += ",";
             json += "\n";
         }
-        json += "  ]\n}";
+        json += "  ],\n";
+        {
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                     "  \"timing\": {\n"
+                     "    \"load_ms\": %lld,\n"
+                     "    \"mel_ms\": %lld,\n"
+                     "    \"encode_ms\": %lld,\n"
+                     "    \"align_ms\": %lld,\n"
+                     "    \"total_ms\": %lld,\n"
+                     "    \"audio_duration_s\": %.3f\n"
+                     "  }\n",
+                     (long long)align_result.t_load_ms,
+                     (long long)align_result.t_mel_ms,
+                     (long long)align_result.t_encode_ms,
+                     (long long)align_result.t_align_ms,
+                     (long long)align_result.t_total_ms,
+                     align_result.audio_duration_s);
+            json += buf;
+        }
+        json += "}";
         write_output(json, output_path);
     } else {
         std::string out;

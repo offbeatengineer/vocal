@@ -42,6 +42,7 @@ struct transcribe_result {
     int64_t t_encode_ms = 0;
     int64_t t_decode_ms = 0;
     int64_t t_total_ms = 0;
+    float audio_duration_s = 0.0f;
 };
 
 // A single word with its time span
@@ -62,6 +63,7 @@ struct align_result {
     int64_t t_encode_ms = 0;
     int64_t t_align_ms = 0;
     int64_t t_total_ms = 0;
+    float audio_duration_s = 0.0f;
 };
 
 // Progress callback type
@@ -144,6 +146,7 @@ private:
 
     // State
     bool model_loaded_ = false;
+    int64_t load_time_ms_ = 0;
     std::string error_msg_;
     progress_callback_t progress_callback_;
 };

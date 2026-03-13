@@ -60,6 +60,7 @@ int32_t TTS::get_language_id(const std::string & name) const {
 bool TTS::load(const std::string & model_path,
                const std::string & tokenizer_path,
                const std::string & decoder_path) {
+    int64_t t_start = get_time_ms();
     if (!tokenizer_.load(tokenizer_path)) {
         error_ = "Failed to load tokenizer: " + tokenizer_.get_error();
         return false;
@@ -74,12 +75,13 @@ bool TTS::load(const std::string & model_path,
         return false;
     }
     loaded_ = true;
-    fprintf(stderr, "TTS model loaded successfully\n");
+    load_time_ms_ += get_time_ms() - t_start;
     return true;
 }
 
 bool TTS::load_encoders(const std::string & codec_encoder_path,
                          const std::string & speaker_encoder_path) {
+    int64_t t_start = get_time_ms();
     if (!codec_encoder_path.empty()) {
         codec_encoder_ = std::make_unique<CodecEncoder>();
         if (!codec_encoder_->load(codec_encoder_path)) {
@@ -98,6 +100,7 @@ bool TTS::load_encoders(const std::string & codec_encoder_path,
     }
 
     encoders_loaded_ = true;
+    load_time_ms_ += get_time_ms() - t_start;
     return true;
 }
 
@@ -205,8 +208,7 @@ void TTS::build_prompt_embeds(const std::vector<int32_t> & text_tokens,
     }
     pos++;
 
-    fprintf(stderr, "Prompt: %d positions (3 role + %d control + %d text + 1 eos + 1 bos)\n",
-            n_prompt, n_codec - 1, n_text_content);
+    (void)n_prompt;
 }
 
 void TTS::build_prompt_embeds_xvec(const std::vector<int32_t> & text_tokens,
@@ -378,8 +380,7 @@ void TTS::build_prompt_embeds_xvec(const std::vector<int32_t> & text_tokens,
     }
     pos++;
 
-    fprintf(stderr, "Prompt (xvec): %d positions (3 role + %d control + %d text + 1 eos + 1 bos)\n",
-            n_prompt, n_paired, n_text_content);
+    (void)n_prompt; (void)n_paired; (void)n_text_content;
 }
 
 void TTS::build_prompt_embeds_icl(const std::vector<int32_t> & text_tokens,
@@ -548,8 +549,7 @@ void TTS::build_prompt_embeds_icl(const std::vector<int32_t> & text_tokens,
         }
     }
 
-    fprintf(stderr, "Prompt (ICL): %d positions (header=%d, paired=%d, text=%d, codec=%d, trailing=%d)\n",
-            n_prompt, n_header, n_paired, text_lens, codec_lens, n_trailing);
+    (void)n_header; (void)text_lens; (void)codec_lens;
 }
 
 void TTS::generate_codes_v2(const std::vector<float> & prompt_embeds,
@@ -594,7 +594,6 @@ void TTS::generate_codes_v2(const std::vector<float> & prompt_embeds,
         seed = rd();
     }
     std::mt19937 rng(seed);
-    fprintf(stderr, "  Seed: %u\n", seed);
 
     std::vector<int32_t> generated_codes;
 
@@ -658,7 +657,6 @@ void TTS::generate_codes_v2(const std::vector<float> & prompt_embeds,
     // 2. Autoregressive generation
     for (int32_t step = 0; step < params.max_tokens; step++) {
         if (best_id == CODEC_EOS) {
-            fprintf(stderr, "  EOS at step %d\n", step);
             break;
         }
 
@@ -709,9 +707,6 @@ void TTS::generate_codes_v2(const std::vector<float> & prompt_embeds,
         best_id = sample_token(logits.data(), vocab_size);
         last_hidden.assign(hidden.begin(), hidden.begin() + H);
 
-        if (step > 0 && step % 100 == 0) {
-            fprintf(stderr, "  Generated %d steps...\n", step);
-        }
     }
 
     // 3. Filter special tokens from code_0 and build multi-codebook output
@@ -724,9 +719,6 @@ void TTS::generate_codes_v2(const std::vector<float> & prompt_embeds,
     }
 
     int seq_len = (int)valid_indices.size();
-    fprintf(stderr, "Generated %d steps, %d valid codes across %d codebooks\n",
-            raw_len, seq_len, n_codebooks);
-
     out_multi_codes.resize(n_codebooks, std::vector<int32_t>(seq_len, 0));
     for (int cb = 0; cb < n_codebooks; cb++) {
         for (int j = 0; j < seq_len; j++) {
@@ -752,9 +744,6 @@ bool TTS::encode_voice_profile(const std::string & ref_audio_path,
     if (!load_reference_audio(ref_audio_path, ref_audio)) {
         return false;
     }
-    fprintf(stderr, "Reference audio: %zu samples (%.1f sec at 24kHz)\n",
-            ref_audio.size(), (float)ref_audio.size() / 24000.0f);
-
     // Encode speaker embedding
     if (speaker_encoder_) {
         out_profile.speaker_embed = speaker_encoder_->encode(ref_audio.data(), (int)ref_audio.size());
@@ -801,7 +790,6 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
     int64_t t_tok_start = get_time_ms();
     auto text_tokens = tokenizer_.encode(text);
     result.t_tokenize_ms = get_time_ms() - t_tok_start;
-    fprintf(stderr, "Text tokens: %zu\n", text_tokens.size());
 
     // 2. Language ID
     int32_t language_id = get_language_id(params.language);
@@ -832,11 +820,6 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
             speaker_embed.clear();
         }
 
-        fprintf(stderr, "Voice profile: %d codebooks × %d frames, ref text tokens: %zu\n",
-                (int)ref_codes.size(),
-                ref_codes.empty() ? 0 : (int)ref_codes[0].size(),
-                ref_text_tokens.size());
-
         result.t_encode_ms = get_time_ms() - t_enc_start;
     } else if (is_clone) {
         int64_t t_enc_start = get_time_ms();
@@ -847,9 +830,6 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
             result.error_msg = error_;
             return result;
         }
-        fprintf(stderr, "Reference audio: %zu samples (%.1f sec at 24kHz)\n",
-                ref_audio.size(), (float)ref_audio.size() / 24000.0f);
-
         // Extract speaker embedding (if speaker encoder is available)
         if (speaker_encoder_) {
             speaker_embed = speaker_encoder_->encode(ref_audio.data(), (int)ref_audio.size());
@@ -879,8 +859,6 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
                 return result;
             }
             ref_text_tokens = tokenizer_.encode(params.ref_text);
-            fprintf(stderr, "Reference text tokens: %zu, codec frames: %zu\n",
-                    ref_text_tokens.size(), ref_codes[0].size());
         }
 
         result.t_encode_ms = get_time_ms() - t_enc_start;
@@ -917,9 +895,6 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
             fprintf(stderr, "Warning: unknown speaker '%s', using Vivian\n", params.speaker.c_str());
             speaker_id = 3065;
         }
-        fprintf(stderr, "Speaker: %s (id=%d), Language: %s (id=%d)\n",
-                params.speaker.c_str(), speaker_id,
-                params.language.c_str(), language_id);
         build_prompt_embeds(text_tokens, speaker_id, language_id, prompt_embeds, tts_pad_embed);
     }
 
@@ -952,19 +927,29 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
     result.sample_rate = decoder_->get_config().sample_rate;
     result.success = true;
     result.t_total_ms = get_time_ms() - t_total_start;
+    result.t_load_ms = load_time_ms_;
 
     if (params.print_timing) {
-        int n_samples = (int)result.audio.size();
-        fprintf(stderr, "\nTiming:\n");
-        fprintf(stderr, "  Tokenize:   %lld ms\n", (long long)result.t_tokenize_ms);
+        float audio_duration_s = (float)result.audio.size() / (float)result.sample_rate;
+        int64_t t_all = result.t_load_ms + result.t_total_ms;
+        float tok_s = result.t_generate_ms > 0
+            ? (float)result.n_tokens_generated / ((float)result.t_generate_ms / 1000.0f) : 0.0f;
+        float rtf = result.t_total_ms > 0
+            ? audio_duration_s / ((float)result.t_total_ms / 1000.0f) : 0.0f;
+
+        fprintf(stderr, "\nPerformance:\n");
+        fprintf(stderr, "  Load model:      %4lld ms\n", (long long)result.t_load_ms);
+        fprintf(stderr, "  Tokenize:        %4lld ms\n", (long long)result.t_tokenize_ms);
         if (is_clone) {
-            fprintf(stderr, "  Encode ref: %lld ms\n", (long long)result.t_encode_ms);
+            fprintf(stderr, "  Encode ref:      %4lld ms\n", (long long)result.t_encode_ms);
         }
-        fprintf(stderr, "  Generate:   %lld ms (%d codes)\n", (long long)result.t_generate_ms, result.n_tokens_generated);
-        fprintf(stderr, "  Decode:     %lld ms\n", (long long)result.t_decode_ms);
-        fprintf(stderr, "  Total:      %lld ms\n", (long long)result.t_total_ms);
-        fprintf(stderr, "  Output:     %d samples (%.1f sec at %d Hz)\n",
-                n_samples, (float)n_samples / result.sample_rate, result.sample_rate);
+        fprintf(stderr, "  Generate:        %4lld ms  (%d codes, %.1f tok/s)\n",
+                (long long)result.t_generate_ms, result.n_tokens_generated, tok_s);
+        fprintf(stderr, "  Audio decode:    %4lld ms\n", (long long)result.t_decode_ms);
+        fprintf(stderr, "  Total:           %4lld ms  (%lld ms excl. load)\n",
+                (long long)t_all, (long long)result.t_total_ms);
+        fprintf(stderr, "  Audio:           %5.1f s   (%.1fx realtime)\n",
+                audio_duration_s, rtf);
     }
 
     return result;

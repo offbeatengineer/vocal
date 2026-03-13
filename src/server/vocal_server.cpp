@@ -259,10 +259,13 @@ static void handle_asr_transcribe(ServerContext & ctx, const httplib::Request & 
 
     char json[8192];
     snprintf(json, sizeof(json),
-             "{\"text\":\"%s\",\"language\":\"%s\",\"timing\":{\"total_ms\":%lld}}",
+             "{\"text\":\"%s\",\"language\":\"%s\",\"timing\":{\"load_ms\":%lld,\"total_ms\":%lld,\"audio_duration_s\":%.3f}}",
              escape_json(transcript).c_str(),
              escape_json(lang).c_str(),
-             (long long)result.t_total_ms);
+             (long long)result.t_load_ms,
+             (long long)result.t_total_ms,
+             result.audio_duration_s);
+    res.set_header("X-Vocal-Load-Ms", std::to_string(result.t_load_ms));
     res.set_content(json, "application/json");
 }
 
@@ -336,6 +339,7 @@ static void handle_tts_synthesize(ServerContext & ctx, const httplib::Request & 
         return;
     }
 
+    res.set_header("X-Vocal-Load-Ms", std::to_string(result.t_load_ms));
     res.set_header("X-Vocal-Total-Ms", std::to_string(total_ms));
     res.set_header("X-Vocal-Generate-Ms", std::to_string(result.t_generate_ms));
     res.set_header("X-Vocal-Decode-Ms", std::to_string(result.t_decode_ms));
@@ -441,6 +445,7 @@ static void handle_tts_clone(ServerContext & ctx, const httplib::Request & req,
         return;
     }
 
+    res.set_header("X-Vocal-Load-Ms", std::to_string(result.t_load_ms));
     res.set_header("X-Vocal-Total-Ms", std::to_string(total_ms));
     res.set_header("X-Vocal-Generate-Ms", std::to_string(result.t_generate_ms));
     res.set_header("X-Vocal-Decode-Ms", std::to_string(result.t_decode_ms));

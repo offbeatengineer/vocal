@@ -40,6 +40,7 @@ struct tts_result {
     bool success = false;
     std::string error_msg;
 
+    int64_t t_load_ms = 0;
     int64_t t_tokenize_ms = 0;
     int64_t t_encode_ms = 0;     // Reference audio encoding time
     int64_t t_generate_ms = 0;
@@ -82,6 +83,7 @@ private:
 
     bool loaded_ = false;
     bool encoders_loaded_ = false;
+    int64_t load_time_ms_ = 0;
     std::string error_;
 
     // Codec special token IDs

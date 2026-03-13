@@ -72,8 +72,6 @@ void AudioDecoder::normalize_codebooks() {
 bool AudioDecoder::load(const std::string & model_path) {
     unload();
 
-    fprintf(stderr, "Loading audio decoder from %s...\n", model_path.c_str());
-
     GGUFLoader loader;
     if (!loader.open(model_path)) {
         error_ = loader.get_error();
@@ -290,7 +288,7 @@ bool AudioDecoder::load(const std::string & model_path) {
 
     ggml_backend_dev_t device = ggml_backend_get_device(state_.backend);
     const char * device_name = device ? ggml_backend_dev_name(device) : "Unknown";
-    fprintf(stderr, "  AudioDecoder backend: %s\n", device_name);
+    (void)device_name;
 
     if (device && ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU) {
         state_.backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
@@ -311,7 +309,6 @@ bool AudioDecoder::load(const std::string & model_path) {
 
     state_.compute_meta.resize(ggml_tensor_overhead() * VOCAL_DEC_MAX_NODES + ggml_graph_overhead());
 
-    fprintf(stderr, "Audio decoder loaded successfully (%d tensors)\n", dec_tensor_count);
     return true;
 }
 
@@ -782,10 +779,6 @@ std::vector<float> AudioDecoder::decode(const std::vector<std::vector<int32_t>> 
     ggml_backend_tensor_get(audio_tensor, samples.data(), 0, n_samples * sizeof(float));
 
     ggml_backend_sched_reset(state_.sched);
-
-    fprintf(stderr, "Decoded %d codes -> %lld samples (%.1f sec at %d Hz)\n",
-            seq_len, (long long)n_samples,
-            (float)n_samples / cfg.sample_rate, cfg.sample_rate);
 
     return samples;
 }

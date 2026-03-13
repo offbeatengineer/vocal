@@ -49,13 +49,6 @@ int vocal_tts_run(const char * model_path, const char * tokenizer_path,
                   struct vocal_sampling_params sampling) {
     ggml_log_set(ggml_log_quiet_tts, nullptr);
 
-    fprintf(stderr, "vocal tts\n");
-    fprintf(stderr, "  Model: %s\n", model_path);
-    fprintf(stderr, "  Tokenizer: %s\n", tokenizer_path);
-    fprintf(stderr, "  Decoder: %s\n", decoder_path);
-    fprintf(stderr, "  Text: \"%s\"\n", text);
-    fprintf(stderr, "\n");
-
     vocal_tts::TTS tts;
 
     if (!tts.load(model_path, tokenizer_path, decoder_path)) {
@@ -99,19 +92,6 @@ int vocal_tts_clone(const char * model_path, const char * tokenizer_path,
                     int n_threads, float speed, bool print_timing,
                     struct vocal_sampling_params sampling) {
     ggml_log_set(ggml_log_quiet_tts, nullptr);
-
-    fprintf(stderr, "vocal clone\n");
-    fprintf(stderr, "  Model: %s\n", model_path);
-    fprintf(stderr, "  Tokenizer: %s\n", tokenizer_path);
-    fprintf(stderr, "  Decoder: %s\n", decoder_path);
-    fprintf(stderr, "  Codec encoder: %s\n", encoder_path);
-    fprintf(stderr, "  Speaker encoder: %s\n", spk_encoder_path);
-    fprintf(stderr, "  Reference: %s\n", ref_audio_path);
-    if (ref_text && ref_text[0]) {
-        fprintf(stderr, "  Ref text: \"%s\"\n", ref_text);
-    }
-    fprintf(stderr, "  Text: \"%s\"\n", text);
-    fprintf(stderr, "\n");
 
     vocal_tts::TTS tts;
 
@@ -164,14 +144,6 @@ int vocal_tts_save_voice(const char * model_path, const char * tokenizer_path,
                           const char * save_path) {
     ggml_log_set(ggml_log_quiet_tts, nullptr);
 
-    fprintf(stderr, "vocal clone --save\n");
-    fprintf(stderr, "  Reference: %s\n", ref_audio_path);
-    if (ref_text && ref_text[0]) {
-        fprintf(stderr, "  Ref text: \"%s\"\n", ref_text);
-    }
-    fprintf(stderr, "  Save to: %s\n", save_path);
-    fprintf(stderr, "\n");
-
     vocal_tts::TTS tts;
 
     if (!tts.load(model_path, tokenizer_path, decoder_path)) {
@@ -211,12 +183,6 @@ int vocal_tts_with_voice(const char * model_path, const char * tokenizer_path,
                           int n_threads, float speed, bool print_timing,
                           struct vocal_sampling_params sampling) {
     ggml_log_set(ggml_log_quiet_tts, nullptr);
-
-    fprintf(stderr, "vocal tts --voice\n");
-    fprintf(stderr, "  Model: %s\n", model_path);
-    fprintf(stderr, "  Voice: %s\n", voice_path);
-    fprintf(stderr, "  Text: \"%s\"\n", text);
-    fprintf(stderr, "\n");
 
     vocal_tts::TTS tts;
 

@@ -36,10 +36,9 @@ bool Qwen3ASR::load_model(const std::string & model_path) {
     generate_mel_filters(mel_filters_, QWEN_N_MELS, QWEN_N_FFT, QWEN_SAMPLE_RATE);
     
     model_loaded_ = true;
-    
-    int64_t t_end = get_time_ms();
-    fprintf(stderr, "Model loaded in %lld ms\n", (long long)(t_end - t_start));
-    
+
+    load_time_ms_ += get_time_ms() - t_start;
+
     return true;
 }
 
@@ -95,9 +94,6 @@ transcribe_result Qwen3ASR::transcribe_internal(const float * samples, int n_sam
     }
     result.t_mel_ms = get_time_ms() - t_mel_start;
     
-    if (params.print_progress) {
-        fprintf(stderr, "Mel spectrogram: [%d, %d]\n", mel.n_mel, mel.n_len);
-    }
     
     int64_t t_encode_start = get_time_ms();
     std::vector<float> audio_features;
@@ -113,15 +109,9 @@ transcribe_result Qwen3ASR::transcribe_internal(const float * samples, int n_sam
     const auto & text_hparams = encoder_.get_text_hparams();
     int32_t n_audio_frames = audio_features.size() / text_hparams.hidden_size;
     
-    if (params.print_progress) {
-        fprintf(stderr, "Audio features: [%d, %d]\n", n_audio_frames, text_hparams.hidden_size);
-    }
     
     std::vector<int32_t> input_tokens = build_input_tokens(n_audio_frames, params.language);
     
-    if (params.print_progress) {
-        fprintf(stderr, "Input tokens: %zu\n", input_tokens.size());
-    }
     
     int64_t t_decode_start = get_time_ms();
     std::vector<int32_t> output_tokens;
@@ -134,18 +124,31 @@ transcribe_result Qwen3ASR::transcribe_internal(const float * samples, int n_sam
     result.tokens = output_tokens;
     result.text = decoder_.decode_tokens(output_tokens);
     result.success = true;
-    
+
     result.t_total_ms = get_time_ms() - t_total_start;
-    
+    result.t_load_ms = load_time_ms_;
+    result.audio_duration_s = (float)n_samples / (float)QWEN_SAMPLE_RATE;
+
     if (params.print_timing) {
-        fprintf(stderr, "\nTiming:\n");
-        fprintf(stderr, "  Mel spectrogram: %lld ms\n", (long long)result.t_mel_ms);
-        fprintf(stderr, "  Audio encoding:  %lld ms\n", (long long)result.t_encode_ms);
-        fprintf(stderr, "  Text decoding:   %lld ms\n", (long long)result.t_decode_ms);
-        fprintf(stderr, "  Total:           %lld ms\n", (long long)result.t_total_ms);
-        fprintf(stderr, "  Tokens generated: %zu\n", output_tokens.size());
+        int64_t t_all = result.t_load_ms + result.t_total_ms;
+        int n_tok = (int)output_tokens.size();
+        float tok_s = result.t_decode_ms > 0
+            ? (float)n_tok / ((float)result.t_decode_ms / 1000.0f) : 0.0f;
+        float rtf = result.t_total_ms > 0
+            ? result.audio_duration_s / ((float)result.t_total_ms / 1000.0f) : 0.0f;
+
+        fprintf(stderr, "\nPerformance:\n");
+        fprintf(stderr, "  Load model:      %4lld ms\n", (long long)result.t_load_ms);
+        fprintf(stderr, "  Mel spectrogram: %4lld ms\n", (long long)result.t_mel_ms);
+        fprintf(stderr, "  Audio encode:    %4lld ms\n", (long long)result.t_encode_ms);
+        fprintf(stderr, "  Text decode:     %4lld ms  (%d tokens, %.1f tok/s)\n",
+                (long long)result.t_decode_ms, n_tok, tok_s);
+        fprintf(stderr, "  Total:           %4lld ms  (%lld ms excl. load)\n",
+                (long long)t_all, (long long)result.t_total_ms);
+        fprintf(stderr, "  Audio:           %5.1f s   (%.1fx realtime)\n",
+                result.audio_duration_s, rtf);
     }
-    
+
     return result;
 }
 
@@ -272,9 +275,6 @@ bool Qwen3ASR::decode_greedy(const std::vector<int32_t> & input_tokens,
             progress_callback_(output_tokens.size(), params.max_tokens);
         }
         
-        if (params.print_progress && output_tokens.size() % 10 == 0) {
-            fprintf(stderr, "Generated %zu tokens...\n", output_tokens.size());
-        }
     }
     
     if (output_tokens.back() == cfg.eos_token_id) {
@@ -324,8 +324,7 @@ bool Qwen3ASR::load_aligner(const std::string & aligner_path) {
 
     aligner_loaded_ = true;
 
-    int64_t t_end = get_time_ms();
-    fprintf(stderr, "Aligner loaded in %lld ms\n", (long long)(t_end - t_start));
+    load_time_ms_ += get_time_ms() - t_start;
 
     return true;
 }
@@ -556,9 +555,6 @@ align_result Qwen3ASR::align(const float * samples, int n_samples,
     // Audio pad tokens start after: <|im_start|>system\n<|im_end|>\n<|im_start|>user\n<|audio_start|>
     int32_t audio_start_pos = 9;
 
-    fprintf(stderr, "  Align: %zu words, %zu input tokens, %d audio frames\n",
-            words.size(), input_tokens.size(), n_audio_frames);
-
     // 4. Single forward pass through classify head
     int64_t t_align_start = get_time_ms();
     std::vector<float> logits;
@@ -611,13 +607,24 @@ align_result Qwen3ASR::align(const float * samples, int n_samples,
 
     result.success = true;
     result.t_total_ms = get_time_ms() - t_total_start;
+    result.t_load_ms = load_time_ms_;
+    result.audio_duration_s = (float)n_samples / (float)QWEN_SAMPLE_RATE;
 
     if (params.print_timing) {
-        fprintf(stderr, "\nAlignment Timing:\n");
-        fprintf(stderr, "  Mel spectrogram: %lld ms\n", (long long)result.t_mel_ms);
-        fprintf(stderr, "  Audio encoding:  %lld ms\n", (long long)result.t_encode_ms);
-        fprintf(stderr, "  Alignment:       %lld ms\n", (long long)result.t_align_ms);
-        fprintf(stderr, "  Total:           %lld ms\n", (long long)result.t_total_ms);
+        int64_t t_all = result.t_load_ms + result.t_total_ms;
+        float rtf = result.t_total_ms > 0
+            ? result.audio_duration_s / ((float)result.t_total_ms / 1000.0f) : 0.0f;
+
+        fprintf(stderr, "\nPerformance:\n");
+        fprintf(stderr, "  Load model:      %4lld ms\n", (long long)result.t_load_ms);
+        fprintf(stderr, "  Mel spectrogram: %4lld ms\n", (long long)result.t_mel_ms);
+        fprintf(stderr, "  Audio encode:    %4lld ms\n", (long long)result.t_encode_ms);
+        fprintf(stderr, "  Alignment:       %4lld ms  (%zu words)\n",
+                (long long)result.t_align_ms, words.size());
+        fprintf(stderr, "  Total:           %4lld ms  (%lld ms excl. load)\n",
+                (long long)t_all, (long long)result.t_total_ms);
+        fprintf(stderr, "  Audio:           %5.1f s   (%.1fx realtime)\n",
+                result.audio_duration_s, rtf);
     }
 
     return result;

@@ -238,7 +238,7 @@ bool TTSTokenizer::parse_json(const std::string & json) {
         vocab_count++;
     }
 
-    fprintf(stderr, "  Loaded %d vocab entries\n", vocab_count);
+    (void)vocab_count;
 
     // Find "merges" within model
     size_t merges_pos = json.find("\"merges\"", model_pos);
@@ -298,13 +298,11 @@ bool TTSTokenizer::parse_json(const std::string & json) {
         merge_count++;
     }
 
-    fprintf(stderr, "  Loaded %d merge rules\n", merge_count);
+    (void)merge_count;
     return true;
 }
 
 bool TTSTokenizer::load(const std::string & path) {
-    fprintf(stderr, "Loading tokenizer from %s...\n", path.c_str());
-
     std::string json = read_file(path);
     if (json.empty()) {
         error_ = "Failed to read tokenizer file: " + path;
@@ -316,8 +314,6 @@ bool TTSTokenizer::load(const std::string & path) {
     }
 
     loaded_ = true;
-    fprintf(stderr, "Tokenizer loaded (%zu vocab, %zu merges)\n",
-            vocab_.size(), merges_.size());
     return true;
 }
 
