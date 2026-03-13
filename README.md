@@ -196,6 +196,78 @@ On Apple Silicon with Metal GPU:
 | Text decoding | ~150 ms |
 | **Total** | **~200 ms** |
 
+## Quantization
+
+The default models are F16 (half-precision). You can convert models to smaller quantized formats for reduced memory usage and faster loading.
+
+### Quantized types
+
+| Type | Size vs F16 | Notes |
+|------|-------------|-------|
+| `f16` | 1x (default) | Best quality |
+| `q8_0` | ~0.5x | Minimal quality loss |
+| `q4_k` | ~0.3x | TTS only, noticeable quality loss |
+
+### Converting models
+
+Requires Python with `gguf`, `torch`, `safetensors`, and `numpy`. Install them with:
+
+```bash
+pip install gguf torch safetensors numpy tqdm
+```
+
+**ASR** (supports `f16`, `f32`, `q8_0`):
+
+```bash
+# Download source model
+hf download Qwen/Qwen3-ASR-0.6B --local-dir /tmp/Qwen3-ASR-0.6B
+
+# Convert to Q8_0
+python tools/convert_asr_to_gguf.py \
+    -i /tmp/Qwen3-ASR-0.6B \
+    -o ~/.vocal/models/qwen3-asr-0.6b-q8_0.gguf \
+    -t q8_0
+
+# Use it
+./vocal asr -m ~/.vocal/models/qwen3-asr-0.6b-q8_0.gguf -f audio.wav
+```
+
+**TTS** (supports `f16`, `f32`, `q8_0`, `q4_k`):
+
+```bash
+# Download source model
+hf download Qwen/Qwen3-TTS-12Hz-0.6B --local-dir /tmp/Qwen3-TTS-0.6B
+
+# Convert to Q8_0
+python tools/convert_tts_to_gguf.py \
+    -i /tmp/Qwen3-TTS-0.6B \
+    -o ~/.vocal/models/qwen3-tts-0.6b-q8_0.gguf \
+    -t q8_0
+
+# Use it
+./vocal tts -m ~/.vocal/models/qwen3-tts-0.6b-q8_0.gguf -t "Hello world" -o output.wav
+```
+
+**1.7B models** work the same way — just substitute the model name:
+
+```bash
+hf download Qwen/Qwen3-ASR-1.7B --local-dir /tmp/Qwen3-ASR-1.7B
+python tools/convert_asr_to_gguf.py -i /tmp/Qwen3-ASR-1.7B -o ~/.vocal/models/qwen3-asr-1.7b-q8_0.gguf -t q8_0
+
+hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base --local-dir /tmp/Qwen3-TTS-1.7B
+python tools/convert_tts_to_gguf.py -i /tmp/Qwen3-TTS-1.7B -o ~/.vocal/models/qwen3-tts-1.7b-q8_0.gguf -t q8_0
+```
+
+The codec decoder (`qwen3-tts-tokenizer-f16.gguf`) and `tokenizer.json` are shared across all model sizes and don't need re-conversion — download them with `./vocal download tts`.
+
+### Batch conversion
+
+Convert all models at once:
+
+```bash
+python tools/convert_all.py -o output/
+```
+
 ## Model Storage
 
 Models are stored in `~/.vocal/models/` by default. Override with:
