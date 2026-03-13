@@ -35,6 +35,13 @@ int vocal_tts_run(const char * model_path, const char * tokenizer_path,
                   int n_threads, float speed, bool print_timing,
                   struct vocal_sampling_params sampling);
 
+int vocal_tts_run_ex(const char * model_path, const char * tokenizer_path,
+                     const char * decoder_path, const char * text,
+                     const char * output_path, const char * speaker,
+                     const char * instruct, bool no_speaker,
+                     int n_threads, float speed, bool print_timing,
+                     struct vocal_sampling_params sampling);
+
 int vocal_tts_clone(const char * model_path, const char * tokenizer_path,
                     const char * decoder_path, const char * encoder_path,
                     const char * spk_encoder_path,
@@ -350,6 +357,10 @@ static void print_tts_usage(void) {
         "  --stdin                  Read text from stdin\n"
         "  -o, --output <path>      Output WAV file [required]\n"
         "  --voice <name>           Use a saved voice profile\n"
+        "  --custom                 Use CustomVoice model (preset speakers + instruct)\n"
+        "  --design                 Use VoiceDesign model (novel voice from description, 1.7B only)\n"
+        "  --speaker <name>         Speaker name for --custom (default: Vivian)\n"
+        "  --instruct <text>        Instruct text (style/emotion for --custom, voice description for --design)\n"
         "  -m, --model <path>       Model file path\n"
         "  --large                  Use 1.7B model (default: 0.6B)\n"
         "  --tokenizer <path>       Tokenizer file path\n"
@@ -371,11 +382,15 @@ static int cmd_tts(int argc, char ** argv) {
     const char * tokenizer_override = NULL;
     const char * model_dir = NULL;
     const char * voice_name = NULL;
+    const char * speaker = NULL;
+    const char * instruct = NULL;
     int n_threads = 4;
     float speed = 1.0f;
     bool print_timing = true;
     bool use_stdin = false;
     bool use_large = false;
+    bool use_custom = false;
+    bool use_design = false;
     struct vocal_sampling_params sampling = { 0.9f, 50, 1.05f, 0 };
 
     for (int i = 0; i < argc; i++) {
@@ -392,6 +407,16 @@ static int cmd_tts(int argc, char ** argv) {
             model_override = argv[i];
         } else if (strcmp(argv[i], "--large") == 0) {
             use_large = true;
+        } else if (strcmp(argv[i], "--custom") == 0) {
+            use_custom = true;
+        } else if (strcmp(argv[i], "--design") == 0) {
+            use_design = true;
+        } else if (strcmp(argv[i], "--speaker") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: --speaker requires argument\n"); return VOCAL_ERR_ARGS; }
+            speaker = argv[i];
+        } else if (strcmp(argv[i], "--instruct") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: --instruct requires argument\n"); return VOCAL_ERR_ARGS; }
+            instruct = argv[i];
         } else if (strcmp(argv[i], "--tokenizer") == 0) {
             if (++i >= argc) { fprintf(stderr, "error: --tokenizer requires argument\n"); return VOCAL_ERR_ARGS; }
             tokenizer_override = argv[i];
@@ -431,6 +456,32 @@ static int cmd_tts(int argc, char ** argv) {
         }
     }
 
+    // --- Validation for --custom / --design ---
+    if (use_custom && use_design) {
+        fprintf(stderr, "error: --custom and --design are mutually exclusive\n");
+        return VOCAL_ERR_ARGS;
+    }
+    if (use_design && !use_large) {
+        fprintf(stderr, "error: --design requires --large (VoiceDesign is 1.7B only)\n");
+        return VOCAL_ERR_ARGS;
+    }
+    if (use_design && (!instruct || !instruct[0])) {
+        fprintf(stderr, "error: --design requires --instruct (voice description)\n");
+        return VOCAL_ERR_ARGS;
+    }
+    if (instruct && instruct[0] && !use_custom && !use_design) {
+        fprintf(stderr, "error: --instruct requires --custom or --design\n");
+        return VOCAL_ERR_ARGS;
+    }
+    if (instruct && instruct[0] && use_custom && !use_large) {
+        fprintf(stderr, "error: --instruct with --custom requires --large (0.6B not trained with instruct)\n");
+        return VOCAL_ERR_ARGS;
+    }
+    if (speaker && !use_custom) {
+        fprintf(stderr, "error: --speaker requires --custom\n");
+        return VOCAL_ERR_ARGS;
+    }
+
     // Read from stdin if requested
     static char stdin_buf[65536];
     if (use_stdin) {
@@ -455,7 +506,19 @@ static int cmd_tts(int argc, char ** argv) {
         return VOCAL_ERR_ARGS;
     }
 
-    const char * tts_model_name = use_large ? VOCAL_TTS_MODEL_LARGE_NAME : VOCAL_TTS_MODEL_NAME;
+    // --- Model name resolution ---
+    const char * tts_model_name;
+    const char * download_hint;
+    if (use_design) {
+        tts_model_name = VOCAL_TTS_DESIGN_MODEL_NAME;
+        download_hint = "tts-design";
+    } else if (use_custom) {
+        tts_model_name = use_large ? VOCAL_TTS_CUSTOM_MODEL_LARGE_NAME : VOCAL_TTS_CUSTOM_MODEL_NAME;
+        download_hint = use_large ? "tts-custom-large" : "tts-custom";
+    } else {
+        tts_model_name = use_large ? VOCAL_TTS_MODEL_LARGE_NAME : VOCAL_TTS_MODEL_NAME;
+        download_hint = use_large ? "tts-large" : "tts";
+    }
 
     // Resolve model path
     char model_path[4096];
@@ -468,11 +531,7 @@ static int cmd_tts(int argc, char ** argv) {
         }
         if (!vocal_model_exists(tts_model_name, model_dir)) {
             fprintf(stderr, "error: TTS model not found at %s\n", model_path);
-            if (use_large) {
-                fprintf(stderr, "Run: vocal download tts-large\n");
-            } else {
-                fprintf(stderr, "Run: vocal download tts\n");
-            }
+            fprintf(stderr, "Run: vocal download %s\n", download_hint);
             return VOCAL_ERR_MODEL;
         }
     }
@@ -519,6 +578,13 @@ static int cmd_tts(int argc, char ** argv) {
         return vocal_tts_with_voice(model_path, tokenizer_path, decoder_path,
                                      voice_path, text, output_path,
                                      n_threads, speed, print_timing, sampling);
+    }
+
+    // CustomVoice or VoiceDesign: use extended TTS entry point
+    if (use_custom || use_design) {
+        return vocal_tts_run_ex(model_path, tokenizer_path, decoder_path, text, output_path,
+                                speaker, instruct, use_design /* no_speaker */,
+                                n_threads, speed, print_timing, sampling);
     }
 
     return vocal_tts_run(model_path, tokenizer_path, decoder_path, text, output_path,
@@ -889,13 +955,16 @@ static void print_download_usage(void) {
         "Download model files.\n"
         "\n"
         "Models:\n"
-        "  asr          Qwen3-ASR 0.6B\n"
-        "  asr-large    Qwen3-ASR 1.7B\n"
-        "  aligner      Qwen3-ForcedAligner 0.6B (word-level timestamps)\n"
-        "  tts          Qwen3-TTS 0.6B + tokenizer + decoder\n"
-        "  tts-large    Qwen3-TTS 1.7B + tokenizer + decoder\n"
-        "  clone        TTS models (same as tts; encoders are embedded)\n"
-        "  clone-large  TTS 1.7B models (same as tts-large)\n"
+        "  asr              Qwen3-ASR 0.6B\n"
+        "  asr-large        Qwen3-ASR 1.7B\n"
+        "  aligner          Qwen3-ForcedAligner 0.6B (word-level timestamps)\n"
+        "  tts              Qwen3-TTS 0.6B + tokenizer + decoder\n"
+        "  tts-large        Qwen3-TTS 1.7B + tokenizer + decoder\n"
+        "  tts-custom       Qwen3-TTS CustomVoice 0.6B + tokenizer + decoder\n"
+        "  tts-custom-large Qwen3-TTS CustomVoice 1.7B + tokenizer + decoder\n"
+        "  tts-design       Qwen3-TTS VoiceDesign 1.7B + tokenizer + decoder\n"
+        "  clone            TTS models (same as tts; encoders are embedded)\n"
+        "  clone-large      TTS 1.7B models (same as tts-large)\n"
         "\n"
         "Options:\n"
         "  --model-dir <path>   Override model storage directory\n"
@@ -941,6 +1010,24 @@ static int cmd_download(int argc, char ** argv) {
         return vocal_model_download(VOCAL_TTS_DECODER_URL, VOCAL_TTS_DECODER_NAME, model_dir);
     } else if (strcmp(model_type, "tts-large") == 0) {
         int ret = vocal_model_download(VOCAL_TTS_MODEL_LARGE_URL, VOCAL_TTS_MODEL_LARGE_NAME, model_dir);
+        if (ret != 0) return ret;
+        ret = vocal_model_download(VOCAL_TTS_TOKENIZER_URL, VOCAL_TTS_TOKENIZER_NAME, model_dir);
+        if (ret != 0) return ret;
+        return vocal_model_download(VOCAL_TTS_DECODER_URL, VOCAL_TTS_DECODER_NAME, model_dir);
+    } else if (strcmp(model_type, "tts-custom") == 0) {
+        int ret = vocal_model_download(VOCAL_TTS_CUSTOM_MODEL_URL, VOCAL_TTS_CUSTOM_MODEL_NAME, model_dir);
+        if (ret != 0) return ret;
+        ret = vocal_model_download(VOCAL_TTS_TOKENIZER_URL, VOCAL_TTS_TOKENIZER_NAME, model_dir);
+        if (ret != 0) return ret;
+        return vocal_model_download(VOCAL_TTS_DECODER_URL, VOCAL_TTS_DECODER_NAME, model_dir);
+    } else if (strcmp(model_type, "tts-custom-large") == 0) {
+        int ret = vocal_model_download(VOCAL_TTS_CUSTOM_MODEL_LARGE_URL, VOCAL_TTS_CUSTOM_MODEL_LARGE_NAME, model_dir);
+        if (ret != 0) return ret;
+        ret = vocal_model_download(VOCAL_TTS_TOKENIZER_URL, VOCAL_TTS_TOKENIZER_NAME, model_dir);
+        if (ret != 0) return ret;
+        return vocal_model_download(VOCAL_TTS_DECODER_URL, VOCAL_TTS_DECODER_NAME, model_dir);
+    } else if (strcmp(model_type, "tts-design") == 0) {
+        int ret = vocal_model_download(VOCAL_TTS_DESIGN_MODEL_URL, VOCAL_TTS_DESIGN_MODEL_NAME, model_dir);
         if (ret != 0) return ret;
         ret = vocal_model_download(VOCAL_TTS_TOKENIZER_URL, VOCAL_TTS_TOKENIZER_NAME, model_dir);
         if (ret != 0) return ret;

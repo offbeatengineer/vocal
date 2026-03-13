@@ -32,6 +32,10 @@ struct tts_params {
     std::string ref_audio_path;   // Reference audio for voice cloning (WAV, 24kHz)
     std::string ref_text;         // Transcript of reference audio (for ICL mode)
     std::string voice_profile;    // Path to saved voice profile (.voice file)
+
+    // CustomVoice / VoiceDesign parameters
+    std::string instruct;         // Instruct text (style/emotion for CustomVoice, voice description for VoiceDesign)
+    bool no_speaker = false;      // VoiceDesign mode: no speaker ID (speaker_id = -1)
 };
 
 struct tts_result {
@@ -47,6 +51,7 @@ struct tts_result {
     int64_t t_decode_ms = 0;
     int64_t t_total_ms = 0;
     int32_t n_tokens_generated = 0;
+    uint32_t seed_used = 0;        // Actual seed used (after resolving 0 → random)
 };
 
 class TTS {
@@ -102,6 +107,11 @@ private:
     // Speaker codec IDs (from CustomVoice config)
     int32_t get_speaker_id(const std::string & name) const;
     int32_t get_language_id(const std::string & name) const;
+
+    // Build instruct embeddings: tokenize instruct text, compute text-only embeddings
+    void build_instruct_embeds(const std::string & instruct_text,
+                                std::vector<float> & out_embeds,
+                                int & n_instruct_tokens);
 
     // Build the prompt embedding: text+codec dual embedding at each position
     void build_prompt_embeds(const std::vector<int32_t> & text_tokens,

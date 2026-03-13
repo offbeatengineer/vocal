@@ -29,6 +29,13 @@
 #define VOCAL_TTS_MODEL_LARGE_NAME "qwen3-tts-1.7b-f16.gguf"
 #define VOCAL_TTS_SPK_ENCODER_LARGE_NAME VOCAL_TTS_MODEL_LARGE_NAME
 
+// CustomVoice model identifiers
+#define VOCAL_TTS_CUSTOM_MODEL_NAME "qwen3-tts-custom-0.6b-f16.gguf"
+#define VOCAL_TTS_CUSTOM_MODEL_LARGE_NAME "qwen3-tts-custom-1.7b-f16.gguf"
+
+// VoiceDesign model identifiers (1.7B only)
+#define VOCAL_TTS_DESIGN_MODEL_NAME "qwen3-tts-design-1.7b-f16.gguf"
+
 // HuggingFace URLs for GGUF models (offbeatengineer org)
 #define VOCAL_ASR_MODEL_URL "https://huggingface.co/offbeatengineer/qwen3-asr-gguf/resolve/main/qwen3-asr-0.6b-f16.gguf"
 #define VOCAL_ASR_MODEL_LARGE_URL "https://huggingface.co/offbeatengineer/qwen3-asr-gguf/resolve/main/qwen3-asr-1.7b-f16.gguf"
@@ -39,6 +46,13 @@
 #define VOCAL_TTS_ENCODER_URL VOCAL_TTS_DECODER_URL
 #define VOCAL_TTS_SPK_ENCODER_URL VOCAL_TTS_MODEL_URL
 #define VOCAL_TTS_SPK_ENCODER_LARGE_URL VOCAL_TTS_MODEL_LARGE_URL
+
+// CustomVoice model URLs
+#define VOCAL_TTS_CUSTOM_MODEL_URL "https://huggingface.co/offbeatengineer/qwen3-tts-gguf/resolve/main/qwen3-tts-custom-0.6b-f16.gguf"
+#define VOCAL_TTS_CUSTOM_MODEL_LARGE_URL "https://huggingface.co/offbeatengineer/qwen3-tts-gguf/resolve/main/qwen3-tts-custom-1.7b-f16.gguf"
+
+// VoiceDesign model URLs (1.7B only)
+#define VOCAL_TTS_DESIGN_MODEL_URL "https://huggingface.co/offbeatengineer/qwen3-tts-gguf/resolve/main/qwen3-tts-design-1.7b-f16.gguf"
 
 // Exit codes
 #define VOCAL_OK          0

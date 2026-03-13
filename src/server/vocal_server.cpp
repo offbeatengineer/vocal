@@ -304,6 +304,12 @@ static void handle_tts_synthesize(ServerContext & ctx, const httplib::Request & 
             params.voice_profile = voice_path;
         }
     }
+    val = json_get(req.body, "speaker");
+    if (!val.empty()) params.speaker = val;
+    val = json_get(req.body, "instruct");
+    if (!val.empty()) params.instruct = val;
+    val = json_get(req.body, "no_speaker");
+    if (val == "true") params.no_speaker = true;
     val = json_get(req.body, "speed");
     if (!val.empty()) params.speed = (float)std::atof(val.c_str());
     val = json_get(req.body, "temperature");

@@ -53,7 +53,9 @@ int32_t TTS::get_language_id(const std::string & name) const {
     if (lower == "korean")     return 2064;
     if (lower == "french")     return 2061;
     if (lower == "russian")    return 2069;
-    if (lower == "auto")       return -1; // Auto-detect
+    if (lower == "auto")             return -1; // Auto-detect
+    if (lower == "sichuan_dialect")  return 2062;
+    if (lower == "beijing_dialect")  return 2074;
     return -1;
 }
 
@@ -117,6 +119,37 @@ bool TTS::load_reference_audio(const std::string & path, std::vector<float> & ou
     out_audio.assign(samples, samples + n_samples);
     free(samples);
     return true;
+}
+
+void TTS::build_instruct_embeds(const std::string & instruct_text,
+                                 std::vector<float> & out_embeds,
+                                 int & n_instruct_tokens) {
+    const auto & cfg = talker_.get_config();
+    const int H = cfg.hidden_size;
+    const auto & sp = tokenizer_.special();
+
+    // Tokenize: <|im_start|>user\n{instruct}<|im_end|>\n
+    auto instruct_tokens = tokenizer_.encode(instruct_text);
+
+    // Build full sequence: [im_start, "user", newline, ...instruct_tokens..., im_end, newline]
+    // The token for "user" needs to be looked up — encode "user" to get token IDs
+    auto user_tokens = tokenizer_.encode("user");
+
+    std::vector<int32_t> full_tokens;
+    full_tokens.push_back(sp.im_start);
+    full_tokens.insert(full_tokens.end(), user_tokens.begin(), user_tokens.end());
+    full_tokens.push_back(sp.newline);
+    full_tokens.insert(full_tokens.end(), instruct_tokens.begin(), instruct_tokens.end());
+    full_tokens.push_back(sp.im_end);
+    full_tokens.push_back(sp.newline);
+
+    n_instruct_tokens = (int)full_tokens.size();
+    out_embeds.resize(n_instruct_tokens * H);
+
+    // Compute text-only embeddings (no codec pairing) via text_embedding + text_projection
+    for (int i = 0; i < n_instruct_tokens; i++) {
+        talker_.compute_text_embedding(full_tokens[i], &out_embeds[i * H]);
+    }
 }
 
 void TTS::build_prompt_embeds(const std::vector<int32_t> & text_tokens,
@@ -588,12 +621,7 @@ void TTS::generate_codes_v2(const std::vector<float> & prompt_embeds,
     const float temperature = params.temperature;
     const int top_k = params.top_k;
     const float rep_penalty = params.rep_penalty;
-    uint32_t seed = params.seed;
-    if (seed == 0) {
-        std::random_device rd;
-        seed = rd();
-    }
-    std::mt19937 rng(seed);
+    std::mt19937 rng(params.seed);
 
     std::vector<int32_t> generated_codes;
 
@@ -791,8 +819,15 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
     auto text_tokens = tokenizer_.encode(text);
     result.t_tokenize_ms = get_time_ms() - t_tok_start;
 
-    // 2. Language ID
+    // 2. Language ID (with dialect override for CustomVoice speakers)
     int32_t language_id = get_language_id(params.language);
+    if (language_id < 0) {
+        // Auto mode: check for dialect speakers
+        std::string spk_lower = params.speaker;
+        for (auto & c : spk_lower) c = tolower(c);
+        if (spk_lower == "eric")  language_id = get_language_id("sichuan_dialect");
+        if (spk_lower == "dylan") language_id = get_language_id("beijing_dialect");
+    }
 
     // 3. Load reference data (from voice profile or live encoding)
     std::vector<float> speaker_embed;
@@ -889,21 +924,45 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
         build_prompt_embeds_xvec(text_tokens, speaker_embed, language_id,
                                  prompt_embeds, tts_pad_embed);
     } else {
-        // Regular TTS with named speaker
-        int32_t speaker_id = get_speaker_id(params.speaker);
-        if (speaker_id < 0) {
-            fprintf(stderr, "Warning: unknown speaker '%s', using Vivian\n", params.speaker.c_str());
-            speaker_id = 3065;
+        // Regular TTS with named speaker (or VoiceDesign with no speaker)
+        int32_t speaker_id = -1;
+        if (!params.no_speaker) {
+            speaker_id = get_speaker_id(params.speaker);
+            if (speaker_id < 0) {
+                fprintf(stderr, "Warning: unknown speaker '%s', using Vivian\n", params.speaker.c_str());
+                speaker_id = 3065;
+            }
         }
         build_prompt_embeds(text_tokens, speaker_id, language_id, prompt_embeds, tts_pad_embed);
     }
 
+    // Prepend instruct embeddings if provided
+    if (!params.instruct.empty()) {
+        std::vector<float> instruct_embeds;
+        int n_instruct = 0;
+        build_instruct_embeds(params.instruct, instruct_embeds, n_instruct);
+
+        // Prepend: instruct_embeds + prompt_embeds
+        std::vector<float> combined;
+        combined.reserve(instruct_embeds.size() + prompt_embeds.size());
+        combined.insert(combined.end(), instruct_embeds.begin(), instruct_embeds.end());
+        combined.insert(combined.end(), prompt_embeds.begin(), prompt_embeds.end());
+        prompt_embeds = std::move(combined);
+    }
+
     int n_prompt = (int)(prompt_embeds.size() / talker_.get_config().hidden_size);
 
-    // 5. Generate audio codes
+    // 5. Resolve seed and generate audio codes
+    tts_params gen_params = params;
+    if (gen_params.seed == 0) {
+        std::random_device rd;
+        gen_params.seed = rd();
+    }
+    result.seed_used = gen_params.seed;
+
     int64_t t_gen_start = get_time_ms();
     std::vector<std::vector<int32_t>> multi_codes;
-    generate_codes_v2(prompt_embeds, n_prompt, tts_pad_embed, params, multi_codes,
+    generate_codes_v2(prompt_embeds, n_prompt, tts_pad_embed, gen_params, multi_codes,
                        trailing_text_hidden, n_trailing);
     result.t_generate_ms = get_time_ms() - t_gen_start;
 
@@ -938,6 +997,7 @@ tts_result TTS::synthesize(const std::string & text, const tts_params & params) 
             ? audio_duration_s / ((float)result.t_total_ms / 1000.0f) : 0.0f;
 
         fprintf(stderr, "\nPerformance:\n");
+        fprintf(stderr, "  Seed:            %u\n", result.seed_used);
         fprintf(stderr, "  Load model:      %4lld ms\n", (long long)result.t_load_ms);
         fprintf(stderr, "  Tokenize:        %4lld ms\n", (long long)result.t_tokenize_ms);
         if (is_clone) {
