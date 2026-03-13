@@ -27,6 +27,10 @@ void Qwen3TalkerLLM::free_model() {
         ggml_backend_sched_free(state_.sched);
         state_.sched = nullptr;
     }
+    if (state_.backend_cpu) {
+        ggml_backend_free(state_.backend_cpu);
+        state_.backend_cpu = nullptr;
+    }
     if (state_.backend) {
         ggml_backend_free(state_.backend);
         state_.backend = nullptr;
@@ -83,49 +87,48 @@ bool Qwen3TalkerLLM::load_model(const std::string & model_path) {
         return false;
     }
     
+    // Initialize backends before loading tensors so data lands on GPU
+    ggml_backend_t gpu_backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
+    ggml_backend_t cpu_backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    if (!cpu_backend) {
+        error_msg_ = "Failed to initialize CPU backend";
+        gguf_free(ctx);
+        if (meta_ctx) ggml_free(meta_ctx);
+        return false;
+    }
+
+    if (gpu_backend) {
+        state_.backend = gpu_backend;
+        state_.backend_cpu = cpu_backend;
+    } else {
+        state_.backend = cpu_backend;
+    }
+
+    // Load tensor data onto primary backend (GPU if available)
     if (!load_tensor_data(model_path, ctx)) {
         free_model();
         gguf_free(ctx);
         if (meta_ctx) ggml_free(meta_ctx);
         return false;
     }
-    
+
     gguf_free(ctx);
     if (meta_ctx) ggml_free(meta_ctx);
-    
-    // Initialize backends
+
+    // Create scheduler with GPU first, CPU as fallback
     std::vector<ggml_backend_t> backends;
+    backends.push_back(state_.backend);
+    if (state_.backend_cpu) backends.push_back(state_.backend_cpu);
 
-#ifdef GGML_USE_CUDA
-    ggml_backend_t cuda_backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
-    if (cuda_backend) {
-        backends.push_back(cuda_backend);
-    } else {
-        std::cerr << "Warning: CUDA backend failed to init." << std::endl;
-    }
-#endif
-
-    // Always add CPU backend last
-    ggml_backend_t cpu_backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
-    if (!cpu_backend) {
-        error_msg_ = "Failed to initialize CPU backend";
-        return false;
-    }
-    backends.push_back(cpu_backend);
-    
-    // Store primary backend for simple access
-    state_.backend = backends[0]; 
-    
-    // Create scheduler
     state_.sched = ggml_backend_sched_new(backends.data(), nullptr, backends.size(), QWEN3_TALKER_MAX_NODES, false, true);
     if (!state_.sched) {
         error_msg_ = "Failed to create backend scheduler";
         return false;
     }
-    
+
     // Reserve space for compute meta
     state_.compute_meta.resize(ggml_tensor_overhead() * QWEN3_TALKER_MAX_NODES + ggml_graph_overhead());
-    
+
     return true;
 }
 
@@ -320,66 +323,44 @@ bool Qwen3TalkerLLM::create_tensors(struct gguf_context * ctx, struct ggml_conte
 }
 
 bool Qwen3TalkerLLM::load_tensor_data(const std::string & path, struct gguf_context * ctx) {
-    // Need a temporary backend usage for allocation
-    ggml_backend_t backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
-    // Actually we should use the state_.backend logic but that's not init yet.
-    // Let's alloc on CPU for simplicity of loading, but if we want GPU, we should init it earlier.
-    // NOTE: In load_model we init backend AFTER this. 
-    // To support GPU offloading properly, we should init backend FIRST.
-    // But let's assume CPU loading for now to be safe, or just move backend init up.
-    // Actually, ggml_backend_alloc_ctx_tensors allocates memory on the backend.
-    // If we want CUDA, we must provide CUDA backend here.
-    
-    // Re-doing backend init logic locally for loader
-#ifdef GGML_USE_CUDA
-    ggml_backend_t load_backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
-    if (!load_backend) load_backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
-#else
-    ggml_backend_t load_backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
-#endif
-
-    if (!load_backend) return false;
-
-    model_.buffer = ggml_backend_alloc_ctx_tensors(model_.ctx, load_backend);
+    // state_.backend is already initialized (GPU or CPU) before this is called
+    model_.buffer = ggml_backend_alloc_ctx_tensors(model_.ctx, state_.backend);
     if (!model_.buffer) {
-        ggml_backend_free(load_backend);
+        error_msg_ = "Failed to allocate tensor buffer";
         return false;
     }
-    
+
     FILE * f = fopen(path.c_str(), "rb");
     if (!f) {
-        ggml_backend_free(load_backend);
+        error_msg_ = "Failed to open file: " + path;
         return false;
     }
-    
+
     const size_t data_offset = gguf_get_data_offset(ctx);
     const int64_t n_tensors = gguf_get_n_tensors(ctx);
     std::vector<uint8_t> read_buf;
-    
+
     for (int64_t i = 0; i < n_tensors; ++i) {
         const char * name = gguf_get_tensor_name(ctx, i);
         struct ggml_tensor * tensor = ggml_get_tensor(model_.ctx, name);
         if (!tensor) continue;
-        
+
         size_t offset = gguf_get_tensor_offset(ctx, i);
         size_t nbytes = ggml_nbytes(tensor);
-        
-        // Direct read if backend supports it (CPU), else read to buffer
-        if (ggml_backend_is_cpu(load_backend)) {
+
+        if (ggml_backend_is_cpu(state_.backend)) {
             fseek(f, data_offset + offset, SEEK_SET);
             fread(tensor->data, 1, nbytes, f);
         } else {
-            // For GPU, read to host buf then copy
+            // For GPU: read to host buffer then copy to device
             if (read_buf.size() < nbytes) read_buf.resize(nbytes);
             fseek(f, data_offset + offset, SEEK_SET);
             fread(read_buf.data(), 1, nbytes, f);
             ggml_backend_tensor_set(tensor, read_buf.data(), 0, nbytes);
         }
     }
-    
+
     fclose(f);
-    ggml_backend_free(load_backend);
-    
     return true;
 }
 
