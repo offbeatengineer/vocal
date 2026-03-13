@@ -102,12 +102,11 @@ struct Qwen3KVCache {
 
 // Runtime state
 struct Qwen3TalkerState {
-    ggml_backend_t backend = nullptr;      // primary (GPU if available)
-    ggml_backend_t backend_cpu = nullptr;   // CPU fallback (null if primary is CPU)
+    ggml_backend_t backend = nullptr;
     ggml_backend_sched_t sched = nullptr;
-
+    
     std::vector<uint8_t> compute_meta;
-
+    
     Qwen3KVCache cache;
 };
 
