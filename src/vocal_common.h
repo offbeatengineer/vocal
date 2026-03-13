@@ -20,6 +20,10 @@
 // Speaker encoder is embedded in the main model GGUF (spk_enc.* tensors)
 #define VOCAL_TTS_SPK_ENCODER_NAME VOCAL_TTS_MODEL_NAME
 
+// Forced aligner model (word-level timestamps)
+#define VOCAL_ALIGNER_MODEL_NAME "qwen3-aligner-0.6b-f16.gguf"
+#define VOCAL_ALIGNER_MODEL_URL "https://huggingface.co/offbeatengineer/qwen3-asr-gguf/resolve/main/qwen3-aligner-0.6b-f16.gguf"
+
 // Model identifiers — 1.7B (--large)
 #define VOCAL_ASR_MODEL_LARGE_NAME "qwen3-asr-1.7b-f16.gguf"
 #define VOCAL_TTS_MODEL_LARGE_NAME "qwen3-tts-1.7b-f16.gguf"

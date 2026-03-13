@@ -44,6 +44,26 @@ struct transcribe_result {
     int64_t t_total_ms = 0;
 };
 
+// A single word with its time span
+struct aligned_word {
+    std::string word;
+    float start_s = 0.0f;
+    float end_s = 0.0f;
+};
+
+// Alignment result (word-level timestamps)
+struct align_result {
+    std::vector<aligned_word> words;
+    bool success = false;
+    std::string error_msg;
+
+    int64_t t_load_ms = 0;
+    int64_t t_mel_ms = 0;
+    int64_t t_encode_ms = 0;
+    int64_t t_align_ms = 0;
+    int64_t t_total_ms = 0;
+};
+
 // Progress callback type
 using progress_callback_t = std::function<void(int tokens_generated, int max_tokens)>;
 
@@ -68,6 +88,14 @@ public:
     transcribe_result transcribe(const float * samples, int n_samples,
                                   const transcribe_params & params = transcribe_params());
     
+    // Load forced aligner model (separate GGUF)
+    bool load_aligner(const std::string & aligner_path);
+
+    // Align known transcript to audio, producing word-level timestamps
+    align_result align(const float * samples, int n_samples,
+                       const std::string & transcript,
+                       const transcribe_params & params = transcribe_params());
+
     // Set progress callback
     void set_progress_callback(progress_callback_t callback);
     
@@ -99,11 +127,21 @@ private:
     // Sample next token (greedy: argmax)
     int32_t sample_greedy(const float * logits, int32_t vocab_size);
     
+    // Build alignment input tokens: audio pads + interleaved transcript with <timestamp> slots
+    std::vector<int32_t> build_align_tokens(int32_t n_audio_frames,
+                                             const std::string & transcript,
+                                             std::vector<std::string> & out_words);
+
     // Components
     AudioEncoder encoder_;
     TextDecoder decoder_;
     MelFilters mel_filters_;
-    
+
+    // ForcedAligner (loaded on demand)
+    AudioEncoder aligner_encoder_;
+    TextDecoder aligner_decoder_;
+    bool aligner_loaded_ = false;
+
     // State
     bool model_loaded_ = false;
     std::string error_msg_;

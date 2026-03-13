@@ -17,6 +17,11 @@ int vocal_asr_run(const char * model_path, const char * audio_path,
                   int n_threads, int max_tokens, bool json_output,
                   bool print_timing);
 
+int vocal_asr_align(const char * model_path, const char * aligner_path,
+                    const char * audio_path, const char * transcript,
+                    const char * output_path, const char * language,
+                    int n_threads, bool json_output, bool print_timing);
+
 struct vocal_sampling_params {
     float temperature;
     int top_k;
@@ -68,6 +73,7 @@ static void print_usage(void) {
         "\n"
         "Commands:\n"
         "  asr          Transcribe audio to text\n"
+        "  align        Word-level timestamp alignment\n"
         "  tts          Synthesize speech from text\n"
         "  clone        Clone a voice from reference audio\n"
         "  serve        Start HTTP server\n"
@@ -95,6 +101,7 @@ static void print_asr_usage(void) {
         "  -l, --language <code>    Language hint\n"
         "  -t, --threads <n>        Thread count (default: 4)\n"
         "  --max-tokens <n>         Max tokens to generate (default: 1024)\n"
+        "  --timestamps             Add word-level timestamps (uses ForcedAligner)\n"
         "  --json                   Output JSON with timestamps\n"
         "  --no-timing              Don't print timing info\n"
         "  --model-dir <path>       Models directory override\n"
@@ -112,6 +119,7 @@ static int cmd_asr(int argc, char ** argv) {
     bool json_output = false;
     bool print_timing = true;
     bool use_large = false;
+    bool timestamps = false;
 
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--file") == 0) {
@@ -134,6 +142,8 @@ static int cmd_asr(int argc, char ** argv) {
         } else if (strcmp(argv[i], "--max-tokens") == 0) {
             if (++i >= argc) { fprintf(stderr, "error: --max-tokens requires argument\n"); return VOCAL_ERR_ARGS; }
             max_tokens = atoi(argv[i]);
+        } else if (strcmp(argv[i], "--timestamps") == 0) {
+            timestamps = true;
         } else if (strcmp(argv[i], "--json") == 0) {
             json_output = true;
         } else if (strcmp(argv[i], "--no-timing") == 0) {
@@ -182,8 +192,149 @@ static int cmd_asr(int argc, char ** argv) {
         }
     }
 
+    if (timestamps) {
+        // Resolve aligner model path
+        char aligner_path[4096];
+        if (!vocal_model_path(VOCAL_ALIGNER_MODEL_NAME, model_dir, aligner_path, sizeof(aligner_path))) {
+            fprintf(stderr, "error: could not resolve aligner model path\n");
+            return VOCAL_ERR_MODEL;
+        }
+        if (!vocal_model_exists(VOCAL_ALIGNER_MODEL_NAME, model_dir)) {
+            fprintf(stderr, "error: aligner model not found at %s\n", aligner_path);
+            fprintf(stderr, "Run: vocal download aligner\n");
+            return VOCAL_ERR_MODEL;
+        }
+        // ASR + alignment: transcribe first, then align
+        return vocal_asr_align(model_path, aligner_path, audio_path, NULL,
+                               output_path, language, n_threads, json_output, print_timing);
+    }
+
     return vocal_asr_run(model_path, audio_path, output_path, language,
                          n_threads, max_tokens, json_output, print_timing);
+}
+
+// --- Align subcommand ---
+
+static void print_align_usage(void) {
+    fprintf(stderr,
+        "Usage: vocal align [options]\n"
+        "\n"
+        "Align transcript to audio, producing word-level timestamps.\n"
+        "\n"
+        "Options:\n"
+        "  -f, --file <path>        Audio file (WAV/MP3/FLAC) [required]\n"
+        "  --text <text>            Transcript to align (default: auto-transcribe with ASR)\n"
+        "  -o, --output <path>      Output file (default: stdout)\n"
+        "  -m, --model <path>       ASR model for auto-transcription\n"
+        "  --aligner <path>         Aligner model path (overrides default)\n"
+        "  --large                  Use 1.7B ASR model\n"
+        "  -l, --language <code>    Language hint\n"
+        "  -t, --threads <n>        Thread count (default: 4)\n"
+        "  --json                   Output JSON\n"
+        "  --no-timing              Don't print timing info\n"
+        "  --model-dir <path>       Models directory override\n"
+        "  -h, --help               Show this help\n");
+}
+
+static int cmd_align(int argc, char ** argv) {
+    const char * audio_path = NULL;
+    const char * text = NULL;
+    const char * output_path = NULL;
+    const char * model_override = NULL;
+    const char * aligner_override = NULL;
+    const char * model_dir = NULL;
+    const char * language = "";
+    int n_threads = 4;
+    bool json_output = false;
+    bool print_timing = true;
+    bool use_large = false;
+
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--file") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: -f requires argument\n"); return VOCAL_ERR_ARGS; }
+            audio_path = argv[i];
+        } else if (strcmp(argv[i], "--text") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: --text requires argument\n"); return VOCAL_ERR_ARGS; }
+            text = argv[i];
+        } else if (strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: -o requires argument\n"); return VOCAL_ERR_ARGS; }
+            output_path = argv[i];
+        } else if (strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--model") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: -m requires argument\n"); return VOCAL_ERR_ARGS; }
+            model_override = argv[i];
+        } else if (strcmp(argv[i], "--aligner") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: --aligner requires argument\n"); return VOCAL_ERR_ARGS; }
+            aligner_override = argv[i];
+        } else if (strcmp(argv[i], "--large") == 0) {
+            use_large = true;
+        } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--language") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: -l requires argument\n"); return VOCAL_ERR_ARGS; }
+            language = argv[i];
+        } else if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--threads") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: -t requires argument\n"); return VOCAL_ERR_ARGS; }
+            n_threads = atoi(argv[i]);
+        } else if (strcmp(argv[i], "--json") == 0) {
+            json_output = true;
+        } else if (strcmp(argv[i], "--no-timing") == 0) {
+            print_timing = false;
+        } else if (strcmp(argv[i], "--model-dir") == 0) {
+            if (++i >= argc) { fprintf(stderr, "error: --model-dir requires argument\n"); return VOCAL_ERR_ARGS; }
+            model_dir = argv[i];
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_align_usage();
+            return VOCAL_OK;
+        } else {
+            fprintf(stderr, "error: unknown option: %s\n", argv[i]);
+            print_align_usage();
+            return VOCAL_ERR_ARGS;
+        }
+    }
+
+    if (!audio_path) {
+        fprintf(stderr, "error: audio file required (-f)\n\n");
+        print_align_usage();
+        return VOCAL_ERR_ARGS;
+    }
+
+    // Resolve aligner model path
+    char aligner_path[4096];
+    if (aligner_override) {
+        snprintf(aligner_path, sizeof(aligner_path), "%s", aligner_override);
+    } else {
+        if (!vocal_model_path(VOCAL_ALIGNER_MODEL_NAME, model_dir, aligner_path, sizeof(aligner_path))) {
+            fprintf(stderr, "error: could not resolve aligner model path\n");
+            return VOCAL_ERR_MODEL;
+        }
+        if (!vocal_model_exists(VOCAL_ALIGNER_MODEL_NAME, model_dir)) {
+            fprintf(stderr, "error: aligner model not found at %s\n", aligner_path);
+            fprintf(stderr, "Run: vocal download aligner\n");
+            return VOCAL_ERR_MODEL;
+        }
+    }
+
+    // Resolve ASR model path (needed if no --text provided)
+    char model_path[4096];
+    const char * asr_model_ptr = NULL;
+    if (!text || !text[0]) {
+        const char * asr_model_name = use_large ? VOCAL_ASR_MODEL_LARGE_NAME : VOCAL_ASR_MODEL_NAME;
+        if (model_override) {
+            snprintf(model_path, sizeof(model_path), "%s", model_override);
+        } else {
+            if (!vocal_model_path(asr_model_name, model_dir, model_path, sizeof(model_path))) {
+                fprintf(stderr, "error: could not resolve ASR model path\n");
+                return VOCAL_ERR_MODEL;
+            }
+            if (!vocal_model_exists(asr_model_name, model_dir)) {
+                fprintf(stderr, "error: ASR model not found at %s\n", model_path);
+                fprintf(stderr, "Run: vocal download %s\n", use_large ? "asr-large" : "asr");
+                return VOCAL_ERR_MODEL;
+            }
+        }
+        asr_model_ptr = model_path;
+    }
+
+    return vocal_asr_align(asr_model_ptr, aligner_path, audio_path, text,
+                           output_path, language, n_threads, json_output, print_timing);
 }
 
 // --- TTS subcommand ---
@@ -740,6 +891,7 @@ static void print_download_usage(void) {
         "Models:\n"
         "  asr          Qwen3-ASR 0.6B\n"
         "  asr-large    Qwen3-ASR 1.7B\n"
+        "  aligner      Qwen3-ForcedAligner 0.6B (word-level timestamps)\n"
         "  tts          Qwen3-TTS 0.6B + tokenizer + decoder\n"
         "  tts-large    Qwen3-TTS 1.7B + tokenizer + decoder\n"
         "  clone        TTS models (same as tts; encoders are embedded)\n"
@@ -779,6 +931,8 @@ static int cmd_download(int argc, char ** argv) {
         return vocal_model_download(VOCAL_ASR_MODEL_URL, VOCAL_ASR_MODEL_NAME, model_dir);
     } else if (strcmp(model_type, "asr-large") == 0) {
         return vocal_model_download(VOCAL_ASR_MODEL_LARGE_URL, VOCAL_ASR_MODEL_LARGE_NAME, model_dir);
+    } else if (strcmp(model_type, "aligner") == 0) {
+        return vocal_model_download(VOCAL_ALIGNER_MODEL_URL, VOCAL_ALIGNER_MODEL_NAME, model_dir);
     } else if (strcmp(model_type, "tts") == 0) {
         int ret = vocal_model_download(VOCAL_TTS_MODEL_URL, VOCAL_TTS_MODEL_NAME, model_dir);
         if (ret != 0) return ret;
@@ -830,6 +984,8 @@ int main(int argc, char ** argv) {
 
     if (strcmp(cmd, "asr") == 0) {
         return cmd_asr(argc - 2, argv + 2);
+    } else if (strcmp(cmd, "align") == 0) {
+        return cmd_align(argc - 2, argv + 2);
     } else if (strcmp(cmd, "download") == 0) {
         return cmd_download(argc - 2, argv + 2);
     } else if (strcmp(cmd, "models") == 0) {

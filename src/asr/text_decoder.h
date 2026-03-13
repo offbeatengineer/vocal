@@ -27,6 +27,11 @@ struct text_decoder_config {
     int32_t audio_start_token_id = 151669;
     int32_t audio_end_token_id = 151670;
     int32_t audio_pad_token_id = 151676;
+
+    // ForcedAligner specific
+    int32_t classify_num = 0;          // 0 = not an aligner model
+    int32_t timestamp_token_id = 151705;
+    int32_t timestamp_segment_time = 80; // ms per output class
 };
 
 struct decoder_layer {
@@ -61,6 +66,9 @@ struct text_decoder_model {
     
     // LM head
     struct ggml_tensor * output = nullptr;      // [hidden_size, vocab_size]
+
+    // ForcedAligner classify head (mutually exclusive with lm_head usage)
+    struct ggml_tensor * classify_head = nullptr;  // [hidden_size, classify_num]
     
     // GGML context for tensor metadata
     struct ggml_context * ctx = nullptr;
@@ -134,14 +142,25 @@ public:
                             const float * audio_embd, int32_t n_audio,
                             int32_t audio_start_pos, int32_t n_past,
                             std::vector<float> & output);
+
+    // Forward pass for ForcedAligner (classify head, all token positions)
+    // output: logits [n_tokens, classify_num]
+    bool forward_classify(const int32_t * tokens, int32_t n_tokens,
+                          const float * audio_embd, int32_t n_audio,
+                          int32_t audio_start_pos,
+                          std::vector<float> & output);
     
     const text_decoder_config & get_config() const { return model_.config; }
+    bool is_aligner() const { return model_.config.classify_num > 0; }
     
     const std::string & get_error() const { return error_msg_; }
     
     std::string decode_token(int32_t token_id) const;
-    
+
     std::string decode_tokens(const std::vector<int32_t> & tokens) const;
+
+    // BPE encode text to token IDs (for forced alignment)
+    std::vector<int32_t> encode_text(const std::string & text) const;
     
     bool forward_debug(const int32_t * tokens, int32_t n_tokens, int32_t n_past,
                        std::vector<float> & output,
@@ -154,6 +173,11 @@ private:
                                      const float * audio_embd = nullptr,
                                      int32_t n_audio = 0,
                                      int32_t audio_start_pos = 0);
+
+    // Build computation graph for classify head (all positions, no last-token slice)
+    struct ggml_cgraph * build_graph_classify(const int32_t * tokens, int32_t n_tokens,
+                                              const float * audio_embd, int32_t n_audio,
+                                              int32_t audio_start_pos);
     
     // Parse hyperparameters from GGUF
     bool parse_config(struct gguf_context * ctx);
@@ -166,10 +190,21 @@ private:
     
     bool load_vocab(struct gguf_context * ctx);
     
+    // BPE pre-tokenize (GPT-2 style)
+    std::vector<std::string> pre_tokenize(const std::string & text) const;
+
+    // BPE encode a single pre-tokenized chunk
+    std::vector<int32_t> bpe_encode(const std::string & chunk) const;
+
     text_decoder_model model_;
     text_decoder_state state_;
     std::string error_msg_;
     std::vector<std::string> vocab_;
+
+    // BPE encoding data (loaded from GGUF merges)
+    std::map<std::vector<uint8_t>, int32_t> byte_vocab_;  // raw bytes → token_id
+    std::map<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, int> merge_ranks_;
+    bool has_encoder_ = false;
 };
 
 // Free model resources

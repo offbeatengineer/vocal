@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <cctype>
+#include <climits>
 #include <fstream>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -140,7 +142,12 @@ bool TextDecoder::parse_config(struct gguf_context * ctx) {
     cfg.audio_start_token_id = get_u32("qwen3-asr.audio.start_token_id", 151669);
     cfg.audio_end_token_id = get_u32("qwen3-asr.audio.end_token_id", 151670);
     cfg.audio_pad_token_id = get_u32("qwen3-asr.audio.pad_token_id", 151676);
-    
+
+    // ForcedAligner specific (0 = not an aligner model)
+    cfg.classify_num = get_u32("qwen3-asr.classify_num", 0);
+    cfg.timestamp_token_id = get_u32("qwen3-asr.timestamp_token_id", 151705);
+    cfg.timestamp_segment_time = get_u32("qwen3-asr.timestamp_segment_time", 80);
+
     return true;
 }
 
@@ -183,9 +190,20 @@ bool TextDecoder::create_tensors(struct gguf_context * ctx) {
             ne[0] = cfg.n_attention_heads * cfg.head_dim;
             ne[1] = cfg.hidden_size;
             n_dims = 2;
+        } else if (strstr(name, "classify_head.weight")) {
+            ne[0] = cfg.hidden_size;
+            ne[1] = cfg.classify_num > 0 ? cfg.classify_num : 5000;
+            n_dims = 2;
         } else if (strstr(name, "output.weight")) {
-            // Weight tying: output.weight aliases token_embd.weight
-            continue;
+            if (cfg.classify_num > 0) {
+                // ForcedAligner: output.weight IS the classify head [hidden_size, classify_num]
+                ne[0] = cfg.hidden_size;
+                ne[1] = cfg.classify_num;
+                n_dims = 2;
+            } else {
+                // Normal ASR: weight tying — output.weight aliases token_embd.weight
+                continue;
+            }
         } else if (strstr(name, "attn_norm.weight")) {
             ne[0] = cfg.hidden_size;
             n_dims = 1;
@@ -236,6 +254,11 @@ bool TextDecoder::create_tensors(struct gguf_context * ctx) {
         
         if (strstr(name, "token_embd.weight")) {
             model_.token_embd = tensor;
+        } else if (strstr(name, "classify_head.weight")) {
+            model_.classify_head = tensor;
+        } else if (strcmp(name, "output.weight") == 0 && cfg.classify_num > 0) {
+            // ForcedAligner: output.weight is the classify head
+            model_.classify_head = tensor;
         } else if (strstr(name, "output_norm.weight")) {
             model_.output_norm = tensor;
         } else if (strstr(name, "blk.")) {
@@ -681,6 +704,266 @@ bool TextDecoder::forward_with_audio(
     return true;
 }
 
+struct ggml_cgraph * TextDecoder::build_graph_classify(
+    const int32_t * tokens, int32_t n_tokens,
+    const float * audio_embd, int32_t n_audio, int32_t audio_start_pos) {
+
+    const auto & cfg = model_.config;
+    const int n_head = cfg.n_attention_heads;
+    const int n_kv_head = cfg.n_key_value_heads;
+    const int head_dim = cfg.head_dim;
+    const int hidden_size = cfg.hidden_size;
+    const float eps = cfg.rms_norm_eps;
+    const float rope_theta = cfg.rope_theta;
+    const int n_layer = cfg.n_decoder_layers;
+
+    struct ggml_init_params params = {
+        /*.mem_size   =*/ state_.compute_meta.size(),
+        /*.mem_buffer =*/ state_.compute_meta.data(),
+        /*.no_alloc   =*/ true,
+    };
+
+    struct ggml_context * ctx0 = ggml_init(params);
+    struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, QWEN3_ASR_MAX_NODES, false);
+
+    struct ggml_tensor * inp_tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
+    ggml_set_name(inp_tokens, "inp_tokens");
+    ggml_set_input(inp_tokens);
+
+    struct ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
+    ggml_set_name(inp_pos, "inp_pos");
+    ggml_set_input(inp_pos);
+
+    struct ggml_tensor * inp_audio = nullptr;
+    if (audio_embd && n_audio > 0) {
+        inp_audio = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hidden_size, n_audio);
+        ggml_set_name(inp_audio, "inp_audio");
+        ggml_set_input(inp_audio);
+    }
+
+    struct ggml_tensor * cur = ggml_get_rows(ctx0, model_.token_embd, inp_tokens);
+
+    if (inp_audio && n_audio > 0 && audio_start_pos >= 0 && audio_start_pos + n_audio <= n_tokens) {
+        struct ggml_tensor * embd_before = nullptr;
+        struct ggml_tensor * embd_after = nullptr;
+
+        if (audio_start_pos > 0) {
+            embd_before = ggml_view_2d(ctx0, cur, hidden_size, audio_start_pos,
+                                       cur->nb[1], 0);
+        }
+
+        if (audio_start_pos + n_audio < n_tokens) {
+            int after_start = audio_start_pos + n_audio;
+            int after_len = n_tokens - after_start;
+            embd_after = ggml_view_2d(ctx0, cur, hidden_size, after_len,
+                                      cur->nb[1], after_start * cur->nb[1]);
+        }
+
+        if (embd_before && embd_after) {
+            struct ggml_tensor * tmp = ggml_concat(ctx0, embd_before, inp_audio, 1);
+            cur = ggml_concat(ctx0, tmp, embd_after, 1);
+        } else if (embd_before) {
+            cur = ggml_concat(ctx0, embd_before, inp_audio, 1);
+        } else if (embd_after) {
+            cur = ggml_concat(ctx0, inp_audio, embd_after, 1);
+        } else {
+            cur = inp_audio;
+        }
+        ggml_set_name(cur, "embd_with_audio");
+        ggml_set_output(cur);
+    }
+
+    struct ggml_tensor * inpL = cur;
+
+    const float KQscale = 1.0f / sqrtf(float(head_dim));
+
+    // No KV cache for classify — single forward pass with all tokens
+    // Use full self-attention mask (causal)
+    struct ggml_tensor * fa_mask = ggml_new_tensor_2d(ctx0, GGML_TYPE_F16, n_tokens, n_tokens);
+    ggml_set_name(fa_mask, "fa_mask");
+    ggml_set_input(fa_mask);
+
+    for (int il = 0; il < n_layer; ++il) {
+        const auto & layer = model_.layers[il];
+
+        if (!layer.attn_norm || !layer.attn_q || !layer.attn_k || !layer.attn_v ||
+            !layer.attn_output || !layer.ffn_norm || !layer.ffn_gate ||
+            !layer.ffn_up || !layer.ffn_down) {
+            ggml_free(ctx0);
+            return nullptr;
+        }
+
+        cur = ggml_rms_norm(ctx0, inpL, eps);
+        cur = ggml_mul(ctx0, cur, layer.attn_norm);
+
+        struct ggml_tensor * Qcur = ggml_mul_mat(ctx0, layer.attn_q, cur);
+        struct ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.attn_k, cur);
+        struct ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.attn_v, cur);
+
+        Qcur = ggml_reshape_3d(ctx0, Qcur, head_dim, n_head, n_tokens);
+        Kcur = ggml_reshape_3d(ctx0, Kcur, head_dim, n_kv_head, n_tokens);
+        Vcur = ggml_reshape_3d(ctx0, Vcur, head_dim, n_kv_head, n_tokens);
+
+        if (layer.attn_q_norm) {
+            Qcur = ggml_rms_norm(ctx0, Qcur, eps);
+            Qcur = ggml_mul(ctx0, Qcur, layer.attn_q_norm);
+        }
+
+        if (layer.attn_k_norm) {
+            Kcur = ggml_rms_norm(ctx0, Kcur, eps);
+            Kcur = ggml_mul(ctx0, Kcur, layer.attn_k_norm);
+        }
+
+        Qcur = ggml_rope_ext(ctx0, Qcur, inp_pos, nullptr,
+                             head_dim, GGML_ROPE_TYPE_NEOX, 0,
+                             rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+
+        Kcur = ggml_rope_ext(ctx0, Kcur, inp_pos, nullptr,
+                             head_dim, GGML_ROPE_TYPE_NEOX, 0,
+                             rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+
+        // No KV cache — direct flash attention on current tokens
+        struct ggml_tensor * Qfa = ggml_permute(ctx0, Qcur, 0, 2, 1, 3);
+        struct ggml_tensor * K = ggml_permute(ctx0, Kcur, 0, 2, 1, 3);
+        struct ggml_tensor * V = ggml_permute(ctx0, Vcur, 0, 2, 1, 3);
+
+        cur = ggml_flash_attn_ext(ctx0, Qfa, K, V, fa_mask, KQscale, 0.0f, 0.0f);
+        ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
+        cur = ggml_reshape_2d(ctx0, cur, n_head * head_dim, n_tokens);
+
+        cur = ggml_mul_mat(ctx0, layer.attn_output, cur);
+        cur = ggml_add(ctx0, cur, inpL);
+        struct ggml_tensor * inpFF = cur;
+
+        cur = ggml_rms_norm(ctx0, inpFF, eps);
+        cur = ggml_mul(ctx0, cur, layer.ffn_norm);
+
+        struct ggml_tensor * gate = ggml_mul_mat(ctx0, layer.ffn_gate, cur);
+        struct ggml_tensor * up = ggml_mul_mat(ctx0, layer.ffn_up, cur);
+
+        gate = ggml_silu(ctx0, gate);
+        cur = ggml_mul(ctx0, gate, up);
+        cur = ggml_mul_mat(ctx0, layer.ffn_down, cur);
+
+        inpL = ggml_add(ctx0, cur, inpFF);
+    }
+
+    cur = inpL;
+
+    // KEY DIFFERENCE: Do NOT slice to last token — output ALL positions
+    cur = ggml_rms_norm(ctx0, cur, eps);
+    cur = ggml_mul(ctx0, cur, model_.output_norm);
+
+    // Project through classify_head instead of lm_head
+    cur = ggml_mul_mat(ctx0, model_.classify_head, cur);
+    ggml_set_name(cur, "logits");
+    ggml_set_output(cur);
+
+    ggml_build_forward_expand(gf, cur);
+    ggml_free(ctx0);
+
+    return gf;
+}
+
+bool TextDecoder::forward_classify(
+    const int32_t * tokens, int32_t n_tokens,
+    const float * audio_embd, int32_t n_audio,
+    int32_t audio_start_pos,
+    std::vector<float> & output) {
+    QWEN3_TIMER("decoder.forward_classify");
+
+    if (!model_.ctx) {
+        error_msg_ = "Model not loaded";
+        return false;
+    }
+
+    if (!model_.classify_head) {
+        error_msg_ = "Not a ForcedAligner model (no classify_head)";
+        return false;
+    }
+
+    struct ggml_cgraph * gf = build_graph_classify(tokens, n_tokens,
+                                                    audio_embd, n_audio, audio_start_pos);
+    if (!gf) {
+        error_msg_ = "Failed to build classify graph";
+        return false;
+    }
+
+    if (!ggml_backend_sched_alloc_graph(state_.sched, gf)) {
+        error_msg_ = "Failed to allocate classify graph";
+        return false;
+    }
+
+    // Set input tokens
+    struct ggml_tensor * inp_tokens = ggml_graph_get_tensor(gf, "inp_tokens");
+    if (!inp_tokens) {
+        error_msg_ = "Failed to find inp_tokens tensor";
+        ggml_backend_sched_reset(state_.sched);
+        return false;
+    }
+    ggml_backend_tensor_set(inp_tokens, tokens, 0, n_tokens * sizeof(int32_t));
+
+    // Set positions
+    struct ggml_tensor * inp_pos = ggml_graph_get_tensor(gf, "inp_pos");
+    if (inp_pos) {
+        std::vector<int32_t> positions(n_tokens);
+        for (int i = 0; i < n_tokens; ++i) {
+            positions[i] = i;
+        }
+        ggml_backend_tensor_set(inp_pos, positions.data(), 0, n_tokens * sizeof(int32_t));
+    }
+
+    // Set causal mask
+    struct ggml_tensor * fa_mask_t = ggml_graph_get_tensor(gf, "fa_mask");
+    if (fa_mask_t) {
+        std::vector<ggml_fp16_t> mask_data((size_t)n_tokens * n_tokens);
+        const ggml_fp16_t zero_f16 = ggml_fp32_to_fp16(0.0f);
+        const ggml_fp16_t neginf_f16 = ggml_fp32_to_fp16(-INFINITY);
+        for (int q = 0; q < n_tokens; ++q) {
+            for (int k = 0; k < n_tokens; ++k) {
+                mask_data[k + q * n_tokens] = (k <= q) ? zero_f16 : neginf_f16;
+            }
+        }
+        ggml_backend_tensor_set(fa_mask_t, mask_data.data(), 0, mask_data.size() * sizeof(ggml_fp16_t));
+    }
+
+    // Set audio embeddings
+    if (audio_embd && n_audio > 0) {
+        struct ggml_tensor * inp_audio = ggml_graph_get_tensor(gf, "inp_audio");
+        if (inp_audio) {
+            ggml_backend_tensor_set(inp_audio, audio_embd, 0,
+                                    n_audio * model_.config.hidden_size * sizeof(float));
+        }
+    }
+
+    // Compute
+    {
+        QWEN3_TIMER("decoder.classify_compute");
+        if (ggml_backend_sched_graph_compute(state_.sched, gf) != GGML_STATUS_SUCCESS) {
+            error_msg_ = "Failed to compute classify graph";
+            ggml_backend_sched_reset(state_.sched);
+            return false;
+        }
+    }
+
+    // Read output
+    struct ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
+    if (!logits) {
+        error_msg_ = "Failed to find logits tensor";
+        ggml_backend_sched_reset(state_.sched);
+        return false;
+    }
+
+    int64_t classify_num = logits->ne[0];
+    int64_t n_logit_rows = logits->ne[1];
+    output.resize(n_logit_rows * classify_num);
+    ggml_backend_tensor_get(logits, output.data(), 0, output.size() * sizeof(float));
+
+    ggml_backend_sched_reset(state_.sched);
+
+    return true;
+}
+
 bool TextDecoder::forward_debug(const int32_t * tokens, int32_t n_tokens, int32_t n_past,
                                 std::vector<float> & output,
                                 std::map<std::string, std::vector<float>> & debug_tensors) {
@@ -794,27 +1077,6 @@ void free_kv_cache(kv_cache & cache) {
     cache.n_used = 0;
 }
 
-bool TextDecoder::load_vocab(struct gguf_context * ctx) {
-    int64_t tokens_idx = gguf_find_key(ctx, "tokenizer.ggml.tokens");
-    if (tokens_idx < 0) {
-        error_msg_ = "Vocabulary not found in GGUF file";
-        return false;
-    }
-    
-    int64_t n_vocab = gguf_get_arr_n(ctx, tokens_idx);
-    if (n_vocab <= 0) {
-        error_msg_ = "Empty vocabulary in GGUF file";
-        return false;
-    }
-    
-    vocab_.resize(n_vocab);
-    for (int64_t i = 0; i < n_vocab; ++i) {
-        vocab_[i] = gguf_get_arr_str(ctx, tokens_idx, i);
-    }
-    
-    return true;
-}
-
 // GPT-2 byte-level BPE: reverse mapping from Unicode codepoints back to raw bytes.
 // See HuggingFace tokenizers bytes_to_unicode() — printable bytes map to themselves,
 // non-printable bytes map to codepoints 256+n.
@@ -845,6 +1107,99 @@ static std::vector<int> build_unicode_to_byte_table() {
         cp_to_byte[byte_to_cp[b]] = b;
     }
     return cp_to_byte;
+}
+
+bool TextDecoder::load_vocab(struct gguf_context * ctx) {
+    int64_t tokens_idx = gguf_find_key(ctx, "tokenizer.ggml.tokens");
+    if (tokens_idx < 0) {
+        error_msg_ = "Vocabulary not found in GGUF file";
+        return false;
+    }
+    
+    int64_t n_vocab = gguf_get_arr_n(ctx, tokens_idx);
+    if (n_vocab <= 0) {
+        error_msg_ = "Empty vocabulary in GGUF file";
+        return false;
+    }
+    
+    vocab_.resize(n_vocab);
+    for (int64_t i = 0; i < n_vocab; ++i) {
+        vocab_[i] = gguf_get_arr_str(ctx, tokens_idx, i);
+    }
+
+    // Build BPE encoding maps from vocab and merges
+    // GPT-2 byte-level BPE: convert each vocab entry from unicode representation to raw bytes
+    static const std::vector<int> cp_to_byte = build_unicode_to_byte_table();
+
+    for (int64_t i = 0; i < n_vocab; ++i) {
+        const std::string & tok = vocab_[i];
+        std::vector<uint8_t> raw_bytes;
+        for (size_t j = 0; j < tok.size(); ) {
+            uint32_t cp = 0;
+            unsigned char c = static_cast<unsigned char>(tok[j]);
+            size_t len = 0;
+            if (c < 0x80) { cp = c; len = 1; }
+            else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; len = 2; }
+            else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
+            else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 4; }
+            else { j++; continue; }
+            for (size_t k = 1; k < len && j + k < tok.size(); ++k) {
+                cp = (cp << 6) | (static_cast<unsigned char>(tok[j + k]) & 0x3F);
+            }
+            j += len;
+            if (cp < cp_to_byte.size() && cp_to_byte[cp] >= 0) {
+                raw_bytes.push_back(static_cast<uint8_t>(cp_to_byte[cp]));
+            }
+        }
+        if (!raw_bytes.empty()) {
+            byte_vocab_[raw_bytes] = (int32_t)i;
+        }
+    }
+
+    // Load BPE merge rules
+    int64_t merges_idx = gguf_find_key(ctx, "tokenizer.ggml.merges");
+    if (merges_idx >= 0) {
+        int64_t n_merges = gguf_get_arr_n(ctx, merges_idx);
+        for (int64_t i = 0; i < n_merges; ++i) {
+            std::string merge_str = gguf_get_arr_str(ctx, merges_idx, i);
+            size_t space = merge_str.find(' ');
+            if (space == std::string::npos) continue;
+            std::string first_str = merge_str.substr(0, space);
+            std::string second_str = merge_str.substr(space + 1);
+
+            // Convert unicode representations to raw bytes
+            auto to_bytes = [&](const std::string & s) -> std::vector<uint8_t> {
+                std::vector<uint8_t> bytes;
+                for (size_t j = 0; j < s.size(); ) {
+                    uint32_t cp = 0;
+                    unsigned char c = static_cast<unsigned char>(s[j]);
+                    size_t len = 0;
+                    if (c < 0x80) { cp = c; len = 1; }
+                    else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; len = 2; }
+                    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
+                    else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 4; }
+                    else { j++; continue; }
+                    for (size_t k = 1; k < len && j + k < s.size(); ++k) {
+                        cp = (cp << 6) | (static_cast<unsigned char>(s[j + k]) & 0x3F);
+                    }
+                    j += len;
+                    if (cp < cp_to_byte.size() && cp_to_byte[cp] >= 0) {
+                        bytes.push_back(static_cast<uint8_t>(cp_to_byte[cp]));
+                    }
+                }
+                return bytes;
+            };
+
+            auto first = to_bytes(first_str);
+            auto second = to_bytes(second_str);
+            if (!first.empty() && !second.empty()) {
+                merge_ranks_[{first, second}] = (int)i;
+            }
+        }
+        has_encoder_ = true;
+    }
+
+    return true;
 }
 
 std::string TextDecoder::decode_token(int32_t token_id) const {
@@ -937,6 +1292,178 @@ std::string TextDecoder::decode_tokens(const std::vector<int32_t> & tokens) cons
         result += decode_token(token);
     }
     return result;
+}
+
+// --- BPE encoding (for forced alignment) ---
+
+static bool is_letter(uint32_t cp) {
+    if (cp < 0x80) return std::isalpha((int)cp);
+    if (cp >= 0x00C0 && cp <= 0x024F) return true;
+    if (cp >= 0x0400 && cp <= 0x04FF) return true;
+    if (cp >= 0x0600 && cp <= 0x06FF) return true;
+    if (cp >= 0x4E00 && cp <= 0x9FFF) return true;
+    if (cp >= 0x3400 && cp <= 0x4DBF) return true;
+    if (cp >= 0x3040 && cp <= 0x309F) return true;
+    if (cp >= 0x30A0 && cp <= 0x30FF) return true;
+    if (cp >= 0xAC00 && cp <= 0xD7AF) return true;
+    if (cp >= 0x0E00 && cp <= 0x0E7F) return true;
+    if (cp >= 0x0900 && cp <= 0x097F) return true;
+    return false;
+}
+
+static bool is_digit(uint32_t cp) {
+    return (cp >= '0' && cp <= '9');
+}
+
+static uint32_t peek_utf8(const std::string & s, size_t pos, int & len) {
+    unsigned char c = static_cast<unsigned char>(s[pos]);
+    uint32_t cp;
+    if (c < 0x80)                  { cp = c;           len = 1; }
+    else if ((c & 0xE0) == 0xC0)  { cp = c & 0x1F;    len = 2; }
+    else if ((c & 0xF0) == 0xE0)  { cp = c & 0x0F;    len = 3; }
+    else                           { cp = c & 0x07;    len = 4; }
+    for (int j = 1; j < len && pos + j < s.size(); ++j) {
+        cp = (cp << 6) | (static_cast<unsigned char>(s[pos + j]) & 0x3F);
+    }
+    return cp;
+}
+
+std::vector<std::string> TextDecoder::pre_tokenize(const std::string & text) const {
+    // GPT-2 style pre-tokenization: split on spaces (space becomes part of next word),
+    // handle contractions, digits, punctuation
+    std::vector<std::string> chunks;
+    std::string current;
+
+    for (size_t i = 0; i < text.size(); ) {
+        uint8_t c = (uint8_t)text[i];
+
+        // Handle contractions
+        if (c == '\'' && i + 1 < text.size()) {
+            char next = text[i + 1];
+            if (next == 's' || next == 't' || next == 'm' || next == 'd') {
+                if (!current.empty()) { chunks.push_back(current); current.clear(); }
+                current += text[i]; current += text[i + 1];
+                chunks.push_back(current); current.clear();
+                i += 2; continue;
+            }
+            if (next == 'r' && i + 2 < text.size() && text[i + 2] == 'e') {
+                if (!current.empty()) { chunks.push_back(current); current.clear(); }
+                current.append(text, i, 3);
+                chunks.push_back(current); current.clear();
+                i += 3; continue;
+            }
+            if (next == 'v' && i + 2 < text.size() && text[i + 2] == 'e') {
+                if (!current.empty()) { chunks.push_back(current); current.clear(); }
+                current.append(text, i, 3);
+                chunks.push_back(current); current.clear();
+                i += 3; continue;
+            }
+            if (next == 'l' && i + 2 < text.size() && text[i + 2] == 'l') {
+                if (!current.empty()) { chunks.push_back(current); current.clear(); }
+                current.append(text, i, 3);
+                chunks.push_back(current); current.clear();
+                i += 3; continue;
+            }
+        }
+
+        int clen;
+        uint32_t cp = peek_utf8(text, i, clen);
+
+        if (c == ' ' || c == '\t') {
+            if (!current.empty()) { chunks.push_back(current); current.clear(); }
+            current += text[i]; i++;
+            while (i < text.size()) {
+                int cl2;
+                uint32_t cp2 = peek_utf8(text, i, cl2);
+                if (is_letter(cp2)) { current.append(text, i, cl2); i += cl2; }
+                else break;
+            }
+            if (!current.empty()) { chunks.push_back(current); current.clear(); }
+        } else if (c == '\n' || c == '\r') {
+            if (!current.empty()) { chunks.push_back(current); current.clear(); }
+            current += text[i]; i++;
+            chunks.push_back(current); current.clear();
+        } else if (is_letter(cp)) {
+            current.append(text, i, clen); i += clen;
+        } else if (is_digit(cp)) {
+            if (!current.empty()) { chunks.push_back(current); current.clear(); }
+            current.append(text, i, clen);
+            chunks.push_back(current); current.clear();
+            i += clen;
+        } else {
+            if (!current.empty()) { chunks.push_back(current); current.clear(); }
+            current.append(text, i, clen); i += clen;
+            while (i < text.size()) {
+                int cl2;
+                uint32_t cp2 = peek_utf8(text, i, cl2);
+                if (is_letter(cp2)) { current.append(text, i, cl2); i += cl2; }
+                else break;
+            }
+            chunks.push_back(current); current.clear();
+        }
+    }
+    if (!current.empty()) chunks.push_back(current);
+    return chunks;
+}
+
+std::vector<int32_t> TextDecoder::bpe_encode(const std::string & chunk) const {
+    if (chunk.empty()) return {};
+
+    // Initialize: each byte is a separate token
+    std::vector<std::vector<uint8_t>> tokens;
+    for (uint8_t c : chunk) {
+        tokens.push_back({c});
+    }
+
+    // Check if whole chunk is a single vocab entry
+    std::vector<uint8_t> whole(chunk.begin(), chunk.end());
+    auto it = byte_vocab_.find(whole);
+    if (it != byte_vocab_.end()) {
+        return {it->second};
+    }
+
+    // BPE merge loop
+    while (tokens.size() > 1) {
+        int best_rank = INT_MAX;
+        int best_pos = -1;
+        for (size_t j = 0; j + 1 < tokens.size(); ++j) {
+            auto key = std::make_pair(tokens[j], tokens[j + 1]);
+            auto mit = merge_ranks_.find(key);
+            if (mit != merge_ranks_.end() && mit->second < best_rank) {
+                best_rank = mit->second;
+                best_pos = (int)j;
+            }
+        }
+        if (best_pos < 0) break;
+        std::vector<uint8_t> merged = tokens[best_pos];
+        merged.insert(merged.end(), tokens[best_pos + 1].begin(), tokens[best_pos + 1].end());
+        tokens[best_pos] = merged;
+        tokens.erase(tokens.begin() + best_pos + 1);
+    }
+
+    std::vector<int32_t> ids;
+    for (const auto & tok : tokens) {
+        auto vit = byte_vocab_.find(tok);
+        if (vit != byte_vocab_.end()) {
+            ids.push_back(vit->second);
+        } else {
+            for (uint8_t b : tok) {
+                auto sit = byte_vocab_.find({b});
+                if (sit != byte_vocab_.end()) ids.push_back(sit->second);
+            }
+        }
+    }
+    return ids;
+}
+
+std::vector<int32_t> TextDecoder::encode_text(const std::string & text) const {
+    auto chunks = pre_tokenize(text);
+    std::vector<int32_t> all_ids;
+    for (const auto & chunk : chunks) {
+        auto ids = bpe_encode(chunk);
+        all_ids.insert(all_ids.end(), ids.begin(), ids.end());
+    }
+    return all_ids;
 }
 
 } // namespace qwen3_asr
