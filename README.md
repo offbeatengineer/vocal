@@ -84,6 +84,38 @@ For timing instrumentation: `make timing`
 echo "Hello world" | ./vocal tts --stdin -o output.wav
 ```
 
+#### CustomVoice (style/emotion control)
+
+CustomVoice models add preset speakers and instruct-based style control:
+
+```bash
+# Download CustomVoice model
+./vocal download tts-custom          # 0.6B
+./vocal download tts-custom-large    # 1.7B
+
+# Use a preset speaker
+./vocal tts --custom --speaker Vivian -t "Hello world" -o output.wav
+
+# Add style/emotion instruct (requires --large)
+./vocal tts --custom --large --speaker Vivian \
+  --instruct "Speak with excitement and energy" \
+  -t "This is amazing news!" -o output.wav
+```
+
+#### VoiceDesign (novel voice from description)
+
+VoiceDesign generates a novel voice from a text description (1.7B only, no preset speaker):
+
+```bash
+# Download VoiceDesign model
+./vocal download tts-design
+
+# Generate speech with a described voice
+./vocal tts --design --large \
+  --instruct "A warm, deep male voice with a calm, reassuring tone" \
+  -t "Everything is going to be alright." -o output.wav
+```
+
 ### Voice Cloning
 
 ```bash
@@ -116,14 +148,19 @@ echo "Hello world" | ./vocal tts --stdin -o output.wav
 
 ```bash
 # Download models (0.6B, default)
-./vocal download asr      # ASR model (~1.8 GB)
-./vocal download tts      # TTS model + tokenizer + decoder (~1 GB)
-./vocal download clone    # TTS models (same as tts; encoders are embedded)
+./vocal download asr            # ASR model (~1.8 GB)
+./vocal download tts            # TTS Base model + tokenizer + decoder (~1 GB)
+./vocal download clone          # TTS models (same as tts; encoders are embedded)
 
 # Download 1.7B models
 ./vocal download asr-large      # ASR 1.7B (~4.4 GB)
-./vocal download tts-large      # TTS 1.7B + tokenizer + decoder (~3.6 GB)
+./vocal download tts-large      # TTS Base 1.7B + tokenizer + decoder (~3.6 GB)
 ./vocal download clone-large    # TTS 1.7B models for voice cloning
+
+# Download CustomVoice / VoiceDesign models
+./vocal download tts-custom       # CustomVoice 0.6B + tokenizer + decoder
+./vocal download tts-custom-large # CustomVoice 1.7B + tokenizer + decoder
+./vocal download tts-design       # VoiceDesign 1.7B + tokenizer + decoder
 
 # List downloaded models
 ./vocal models
@@ -163,6 +200,16 @@ curl -X POST http://localhost:8080/v1/asr/transcribe \
 curl -X POST http://localhost:8080/v1/tts/synthesize \
   -H "Content-Type: application/json" \
   -d '{"text":"Hello world","speed":1.0}' -o output.wav
+
+# Synthesize with CustomVoice speaker + instruct
+curl -X POST http://localhost:8080/v1/tts/synthesize \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Hello world","speaker":"Vivian","instruct":"Speak cheerfully"}' -o output.wav
+
+# Synthesize with VoiceDesign (no speaker)
+curl -X POST http://localhost:8080/v1/tts/synthesize \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Hello world","no_speaker":"true","instruct":"A deep male voice"}' -o output.wav
 
 # Clone a voice (multipart form)
 curl -X POST http://localhost:8080/v1/tts/clone \
