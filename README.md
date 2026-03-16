@@ -7,7 +7,9 @@ Built on [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) and [Qwen3-TTS]
 ## Quick Start
 
 ```bash
-# Build
+# Clone and build
+git clone --recursive https://github.com/zhiyand/vocal.git
+cd vocal
 make
 
 # Download the ASR model (~1.8 GB)
