@@ -8,7 +8,7 @@ Built on [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) and [Qwen3-TTS]
 
 ```bash
 # Clone and build
-git clone --recursive https://github.com/zhiyand/vocal.git
+git clone --recursive https://github.com/offbeatengineer/vocal.git
 cd vocal
 make
 
@@ -35,7 +35,7 @@ make
 ## Building
 
 ```bash
-git clone --recursive https://github.com/user/vocal.git
+git clone --recursive https://github.com/offbeatengineer/vocal.git
 cd vocal
 make
 ```
