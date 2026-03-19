@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${{ github.ref_name }}" --generate-notes
+
+      - name: Get GGML submodule commit
+        id: ggml
+        run: echo "commit=$(git -C third_party/ggml rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Compute source tarball SHA256
+        id: vocal_hash
+        run: |
+          curl -sL "https://github.com/${{ github.repository }}/archive/refs/tags/v${{ steps.version.outputs.version }}.tar.gz" -o vocal.tar.gz
+          echo "sha256=$(sha256sum vocal.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Compute GGML tarball SHA256
+        id: ggml_hash
+        run: |
+          curl -sL "https://github.com/ggerganov/ggml/archive/${{ steps.ggml.outputs.commit }}.tar.gz" -o ggml.tar.gz
+          echo "sha256=$(sha256sum ggml.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew formula
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          VOCAL_SHA="${{ steps.vocal_hash.outputs.sha256 }}"
+          GGML_COMMIT="${{ steps.ggml.outputs.commit }}"
+          GGML_SHA="${{ steps.ggml_hash.outputs.sha256 }}"
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/offbeatengineer/homebrew-tap.git" tap
+
+          cat > tap/Formula/vocal.rb << EOF
+          class Vocal < Formula
+            desc "Local speech recognition, synthesis, and voice cloning"
+            homepage "https://github.com/offbeatengineer/vocal"
+            url "https://github.com/offbeatengineer/vocal/archive/refs/tags/v${VERSION}.tar.gz"
+            sha256 "${VOCAL_SHA}"
+            license "MIT"
+
+            depends_on "cmake" => :build
+
+            resource "ggml" do
+              url "https://github.com/ggerganov/ggml/archive/${GGML_COMMIT}.tar.gz"
+              sha256 "${GGML_SHA}"
+            end
+
+            def install
+              (buildpath/"third_party/ggml").install resource("ggml")
+
+              ggml_args = %w[-DCMAKE_BUILD_TYPE=Release]
+              ggml_args << "-DGGML_METAL=ON" if OS.mac?
+              system "cmake", "-B", "third_party/ggml/build", "-S", "third_party/ggml", *ggml_args
+              system "cmake", "--build", "third_party/ggml/build", "--parallel"
+
+              system "cmake", "-B", "build", "-DCMAKE_BUILD_TYPE=Release",
+                     "-DCMAKE_INSTALL_PREFIX=#{prefix}"
+              system "cmake", "--build", "build", "--parallel"
+              system "cmake", "--install", "build"
+            end
+
+            test do
+              system bin/"vocal", "version"
+            end
+          end
+          EOF
+          sed -i 's/^          //' tap/Formula/vocal.rb
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/vocal.rb
+          git commit -m "vocal ${VERSION}"
+          git push

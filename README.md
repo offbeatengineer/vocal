@@ -4,19 +4,29 @@ Local voice toolkit — speech recognition, synthesis, and voice cloning. No clo
 
 Built on [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) and [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-0.6B) with [GGML](https://github.com/ggerganov/ggml) inference. Supports both 0.6B and 1.7B model sizes.
 
-## Quick Start
+## Install
 
 ```bash
-# Clone and build
+brew tap offbeatengineer/tap
+brew install vocal
+```
+
+Or build from source:
+
+```bash
 git clone --recursive https://github.com/offbeatengineer/vocal.git
 cd vocal
 make
+```
 
+## Quick Start
+
+```bash
 # Download the ASR model (~1.8 GB)
-./vocal download asr
+vocal download asr
 
 # Transcribe audio
-./vocal asr -f audio.wav
+vocal asr -f audio.wav
 ```
 
 ## Features
