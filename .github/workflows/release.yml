@@ -71,7 +71,7 @@ jobs:
             def install
               (buildpath/"third_party/ggml").install resource("ggml")
 
-              ggml_args = %w[-DCMAKE_BUILD_TYPE=Release]
+              ggml_args = %w[-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF]
               ggml_args << "-DGGML_METAL=ON" if OS.mac?
               system "cmake", "-B", "third_party/ggml/build", "-S", "third_party/ggml", *ggml_args
               system "cmake", "--build", "third_party/ggml/build", "--parallel"
