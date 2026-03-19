@@ -69,7 +69,7 @@ int vocal_tts_with_voice(const char * model_path, const char * tokenizer_path,
 // --- Usage ---
 
 static void print_version(void) {
-    printf("vocal %s\n", VOCAL_VERSION);
+    printf("vocal %s (%s)\n", VOCAL_VERSION, VOCAL_COMMIT);
 }
 
 static void print_usage(void) {

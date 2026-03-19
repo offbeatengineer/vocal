@@ -1,7 +1,13 @@
 #ifndef VOCAL_COMMON_H
 #define VOCAL_COMMON_H
 
-#define VOCAL_VERSION "0.1.0"
+#ifndef VOCAL_VERSION
+#define VOCAL_VERSION "dev"
+#endif
+
+#ifndef VOCAL_COMMIT
+#define VOCAL_COMMIT "unknown"
+#endif
 
 // Default paths
 #define VOCAL_DEFAULT_MODELS_DIR ".vocal/models"

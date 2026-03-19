@@ -3,7 +3,9 @@
 BUILD_DIR = build
 GGML_DIR = third_party/ggml
 GGML_BUILD_DIR = $(GGML_DIR)/build
-CMAKE_FLAGS ?=
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+CMAKE_FLAGS ?= -DVOCAL_VERSION=$(VERSION) -DVOCAL_COMMIT=$(COMMIT)
 
 # Auto-detect Metal on macOS
 UNAME_S := $(shell uname -s)
