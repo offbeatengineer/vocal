@@ -48,6 +48,14 @@ if(GGML_HAS_METAL)
     list(APPEND GGML_LIBS ggml-metal)
     list(APPEND GGML_LINK_DIRS ${GGML_BUILD_DIR}/src/ggml-metal)
 endif()
+# Detect BLAS backend (Accelerate on macOS)
+if(EXISTS "${GGML_BUILD_DIR}/src/ggml-blas/libggml-blas.dylib" OR
+   EXISTS "${GGML_BUILD_DIR}/src/ggml-blas/libggml-blas.a")
+    set(GGML_HAS_BLAS ON)
+    list(APPEND GGML_LIBS ggml-blas)
+    list(APPEND GGML_LINK_DIRS ${GGML_BUILD_DIR}/src/ggml-blas)
+    message(STATUS "Found GGML BLAS backend")
+endif()
 
 
 # --- Mel spectrogram library ---
